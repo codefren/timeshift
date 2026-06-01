@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "simple": {
+      "format": "[%(levelname)s|%(module)s|L%(lineno)d] %(asctime)s: %(message)s",
+      "datefmt": "%Y-%m-%dT%H:%M:%S%z"
+    },
+    "json": {
+      "()": "utils.logger_models.MyJSONFormatter",
+      "fmt_keys": {
+        "level": "levelname",
+        "timestamp": "timestamp",
+        "logger": "name",
+        "message": "message",
+        "module": "module",
+        "function": "funcName",
+        "line": "lineno",
+        "thread_name": "threadName"
+      }
+    }
+  },
+  "filters": {
+    "DebugFilter": {
+      "()": "utils.logger_models.DebugFilter"
+    },
+    "ErrorFilter": {
+      "()": "utils.logger_models.ErrorFilter"
+    },
+    "CriticalFilter": {
+      "()": "utils.logger_models.CriticalFilter"
+    },
+    "WarningFilter": {
+      "()": "utils.logger_models.WarningFilter"
+    },
+    "InfoFilter": {
+      "()": "utils.logger_models.InfoFilter"
+    }
+  },
+
+  "handlers": {
+    "stderr": {
+      "class": "logging.StreamHandler",
+      "level": "WARNING",
+      "formatter": "simple",
+      "stream": "ext://sys.stderr"
+    },
+
+  "file": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "formatter": "json",
+      "filename": "logs/debug.log.jsonl",
+      "maxBytes": 10000000,
+      "backupCount": 3,
+        "filters": [
+            "DebugFilter"
+        ]
+
+    },
+    "file_error": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "formatter": "json",
+      "filename": "logs/error.log.jsonl",
+      "maxBytes": 10000000,
+      "backupCount": 3,
+        "filters": [
+            "ErrorFilter"
+        ]
+    },
+    "file_critical": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "formatter": "json",
+      "filename": "logs/critical.log.jsonl",
+      "maxBytes": 10000000,
+      "backupCount": 3,
+        "filters": [
+            "CriticalFilter"
+        ]
+    },
+    "file_warning": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "formatter": "json",
+      "filename": "logs/warning.log.jsonl",
+      "maxBytes": 10000000,
+      "backupCount": 3,
+        "filters": [
+            "WarningFilter"
+        ]
+    },
+    "file_info": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "formatter": "json",
+      "filename": "logs/info.log.jsonl",
+      "maxBytes": 10000000,
+      "backupCount": 3,
+      "filters": [
+        "InfoFilter"
+      ]
+    }
+  },
+  "loggers": {
+    "root": {
+      "level": "DEBUG",
+      "handlers": [
+
+      ]
+    },
+    "notusable":
+    {
+      "level": "DEBUG",
+      "handlers": [
+      "stderr",
+        "file",
+        "file_error",
+        "file_critical",
+        "file_warning",
+        "file_info"
+      ]
+    }
+  }
+}
