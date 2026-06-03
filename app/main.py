@@ -259,17 +259,17 @@ async def verify_user_token(token: str):
 def read_users_me(current_user: Users = Depends(get_current_user)):
     return current_user
 
+_STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
 @app.get("/{file_path:path}", include_in_schema=False)
 async def read_static(file_path: str):
-    # Si el archivo existe en static, lo devolvemos
-    static_file = os.path.join("static", file_path)
+    static_file = os.path.join(_STATIC_DIR, file_path)
     if os.path.isfile(static_file):
         return FileResponse(static_file)
-    
-    # Si es una ruta de frontend no encontrada, devolvemos index.html para permitir
-    # que el enrutamiento del lado del cliente de React funcione
-    logger.debug(f"static file not found: {static_file}")
-    joined_path = os.path.join(static_file,'index.html')
-    return FileResponse("static/index.html") if not os.path.isfile(joined_path) else FileResponse(joined_path)
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+    logger.debug(f"static file not found: {static_file}")
+    joined_path = os.path.join(static_file, "index.html")
+    index = os.path.join(_STATIC_DIR, "index.html")
+    return FileResponse(joined_path if os.path.isfile(joined_path) else index)
+
+app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="static")
