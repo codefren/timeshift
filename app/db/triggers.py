@@ -10,88 +10,86 @@ def init_worklogs_triggers(engine: Engine):
     WHERE name = 'trg_UpdateUserHoursBalance'
     """
     trg = """
-
-    CREATE   TRIGGER [dbo].[trg_UpdateUserHoursBalance]
+    CREATE TRIGGER [dbo].[trg_UpdateUserHoursBalance]
     ON [dbo].[WorkLogTotals]
-    AFTER INSERT, UPDATE
+    AFTER INSERT, UPDATE, DELETE
     AS
     BEGIN
         SET NOCOUNT ON;
-    
-        ----------------------------------------
-        -- 1) Agregar/actualizar UserWeekHoursBalance
-        ----------------------------------------
-        ;WITH CTE_UserWeek AS (
+
+        -- Delta = nuevos (inserted) - anteriores (deleted)
+        -- INSERT: inserted tiene datos, deleted vacío  → delta = +nuevo
+        -- UPDATE: inserted nuevos,      deleted viejos → delta = nuevo - viejo
+        -- DELETE: inserted vacío,       deleted datos  → delta = -viejo
+
+        ;WITH CTE_Delta AS (
             SELECT
                 wl.UserID,
-                DATEPART(ISO_WEEK, i.StartTime) AS WeekNumber,
-                DATEPART(YEAR,      i.StartTime) AS YearNumber,
-                SUM(i.TotalWorkedHours)         AS SumWorkedHours,
-                SUM(i.TotalPauseCountedHours)   AS SumPausedCountedHours,
-                SUM(i.TotalPauseUncountedHours) AS SumPausedUncountedHours,
-                SUM(i.BalanceScheduleHours)     AS SumBalanceHours
-            FROM inserted AS i
-            JOIN WorkLogs AS wl
-              ON wl.WorkLogID = i.WorkLogID
+                DATEPART(ISO_WEEK, COALESCE(i.StartTime, d.StartTime)) AS WeekNumber,
+                DATEPART(YEAR,     COALESCE(i.StartTime, d.StartTime)) AS YearNumber,
+                SUM(COALESCE(i.TotalWorkedHours,         0) - COALESCE(d.TotalWorkedHours,         0)) AS DeltaWorked,
+                SUM(COALESCE(i.TotalPauseCountedHours,   0) - COALESCE(d.TotalPauseCountedHours,   0)) AS DeltaPauseCounted,
+                SUM(COALESCE(i.TotalPauseUncountedHours, 0) - COALESCE(d.TotalPauseUncountedHours, 0)) AS DeltaPauseUncounted,
+                SUM(COALESCE(i.BalanceScheduleHours,     0) - COALESCE(d.BalanceScheduleHours,     0)) AS DeltaBalance
+            FROM (SELECT WorkLogID FROM inserted UNION SELECT WorkLogID FROM deleted) AS combined(WorkLogID)
+            LEFT JOIN inserted  i ON i.WorkLogID = combined.WorkLogID
+            LEFT JOIN deleted   d ON d.WorkLogID = combined.WorkLogID
+            JOIN WorkLogs wl       ON wl.WorkLogID = combined.WorkLogID
             GROUP BY
                 wl.UserID,
-                DATEPART(ISO_WEEK, i.StartTime),
-                DATEPART(YEAR,      i.StartTime)
+                DATEPART(ISO_WEEK, COALESCE(i.StartTime, d.StartTime)),
+                DATEPART(YEAR,     COALESCE(i.StartTime, d.StartTime))
         )
         MERGE INTO UserWeekHoursBalance AS target
-        USING CTE_UserWeek AS source
-          ON target.UserID     = source.UserID
-         AND target.WeekNumber = source.WeekNumber
-         AND target.Year = source.YearNumber
+        USING CTE_Delta AS source
+          ON  target.UserID     = source.UserID
+          AND target.WeekNumber = source.WeekNumber
+          AND target.Year       = source.YearNumber
         WHEN MATCHED THEN
-            UPDATE
-               SET WorkedHours          = target.WorkedHours          + source.SumWorkedHours,
-                   PausedCountedHours   = target.PausedCountedHours   + source.SumPausedCountedHours,
-                   PausedUncountedHours = target.PausedUncountedHours + source.SumPausedUncountedHours,
-                   BalanceHours         = target.BalanceHours         + source.SumBalanceHours,
-                   UpdatedAt            = GETDATE()
-        WHEN NOT MATCHED THEN
+            UPDATE SET
+                WorkedHours          = target.WorkedHours          + source.DeltaWorked,
+                PausedCountedHours   = target.PausedCountedHours   + source.DeltaPauseCounted,
+                PausedUncountedHours = target.PausedUncountedHours + source.DeltaPauseUncounted,
+                BalanceHours         = target.BalanceHours         + source.DeltaBalance,
+                UpdatedAt            = GETDATE()
+        WHEN NOT MATCHED AND source.DeltaWorked <> 0 THEN
             INSERT (UserID, WeekNumber, Year,
                     WorkedHours, PausedCountedHours, PausedUncountedHours, BalanceHours, UpdatedAt)
             VALUES (source.UserID, source.WeekNumber, source.YearNumber,
-                    source.SumWorkedHours, source.SumPausedCountedHours,
-                    source.SumPausedUncountedHours, source.SumBalanceHours, GETDATE())
+                    source.DeltaWorked, source.DeltaPauseCounted,
+                    source.DeltaPauseUncounted, source.DeltaBalance, GETDATE())
         ;
-    
-        ----------------------------------------
-        -- 2) Agregar/actualizar UserTotalHoursBalance
-        ----------------------------------------
-        ;WITH CTE_UserTotal AS (
+
+        ;WITH CTE_TotalDelta AS (
             SELECT
                 wl.UserID,
-                SUM(i.TotalWorkedHours)         AS SumWorkedHours,
-                SUM(i.TotalPauseCountedHours)   AS SumPausedCountedHours,
-                SUM(i.TotalPauseUncountedHours) AS SumPausedUncountedHours,
-                SUM(i.BalanceScheduleHours)     AS SumBalanceHours
-            FROM inserted AS i
-            JOIN WorkLogs AS wl
-              ON wl.WorkLogID = i.WorkLogID
+                SUM(COALESCE(i.TotalWorkedHours,         0) - COALESCE(d.TotalWorkedHours,         0)) AS DeltaWorked,
+                SUM(COALESCE(i.TotalPauseCountedHours,   0) - COALESCE(d.TotalPauseCountedHours,   0)) AS DeltaPauseCounted,
+                SUM(COALESCE(i.TotalPauseUncountedHours, 0) - COALESCE(d.TotalPauseUncountedHours, 0)) AS DeltaPauseUncounted,
+                SUM(COALESCE(i.BalanceScheduleHours,     0) - COALESCE(d.BalanceScheduleHours,     0)) AS DeltaBalance
+            FROM (SELECT WorkLogID FROM inserted UNION SELECT WorkLogID FROM deleted) AS combined(WorkLogID)
+            LEFT JOIN inserted  i ON i.WorkLogID = combined.WorkLogID
+            LEFT JOIN deleted   d ON d.WorkLogID = combined.WorkLogID
+            JOIN WorkLogs wl       ON wl.WorkLogID = combined.WorkLogID
             GROUP BY wl.UserID
         )
         MERGE INTO UserTotalHoursBalance AS target
-        USING CTE_UserTotal AS source
+        USING CTE_TotalDelta AS source
           ON target.UserID = source.UserID
         WHEN MATCHED THEN
-            UPDATE
-               SET TotalHours               = target.TotalHours               + source.SumWorkedHours,
-                   TotalPausedCountedHours  = target.TotalPausedCountedHours  + source.SumPausedCountedHours,
-                   TotalPausedUncountedHours= target.TotalPausedUncountedHours+ source.SumPausedUncountedHours,
-                   BalanceHours             = target.BalanceHours             + source.SumBalanceHours,
-                   UpdatedAt                = GETDATE()
-        WHEN NOT MATCHED THEN
+            UPDATE SET
+                TotalHours                = target.TotalHours                + source.DeltaWorked,
+                TotalPausedCountedHours   = target.TotalPausedCountedHours   + source.DeltaPauseCounted,
+                TotalPausedUncountedHours = target.TotalPausedUncountedHours + source.DeltaPauseUncounted,
+                BalanceHours              = target.BalanceHours              + source.DeltaBalance,
+                UpdatedAt                 = GETDATE()
+        WHEN NOT MATCHED AND source.DeltaWorked <> 0 THEN
             INSERT (UserID, TotalHours, TotalPausedCountedHours, TotalPausedUncountedHours, BalanceHours, UpdatedAt)
-            VALUES (source.UserID, source.SumWorkedHours, source.SumPausedCountedHours,
-                    source.SumPausedUncountedHours, source.SumBalanceHours, GETDATE())
+            VALUES (source.UserID, source.DeltaWorked, source.DeltaPauseCounted,
+                    source.DeltaPauseUncounted, source.DeltaBalance, GETDATE())
         ;
     END;
     ALTER TABLE [dbo].[WorkLogTotals] ENABLE TRIGGER [trg_UpdateUserHoursBalance];
-
-
     """
     with engine.connect() as connection:
         result = connection.execute(text(check_trigger_sql))

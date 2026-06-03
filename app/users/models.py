@@ -8,7 +8,7 @@ from dependencies import random_string, Pagination
 from typing import Optional, List, Set, Dict, Any, Self, Sequence, Tuple, Union
 from pydantic.types import datetime as datetype, PastDate
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from sqlmodel import Session, desc, select, case, and_
+from sqlmodel import Session, desc, select, case, and_, or_
 from passlib.hash import bcrypt
 import pandas as pd
 from SQLModels import Users, UserDetail, UserAddress, UserPicture, Supervision, Roles, Schedules, \
@@ -238,7 +238,7 @@ class UserCreation(BaseModel):
         return user
 
     def create_supervisors(self, db: Session) -> List[Supervision]:
-        users = [Users.get_by_email(db, email) for email in self.detail.SupervisorEmails]
+        users = [Users.get_by_email(db, email) for email in (self.detail.SupervisorEmails or [])]
         sups = [Supervision(SupervisorID=supervisor.UserID, SubordinateID=self.UserID).update_or_create(db) for
                 supervisor in
                 users if supervisor]
@@ -471,6 +471,8 @@ class UsersWorkingSimple(BaseModel):
             .subquery()
         )
 
+        today = date.today()
+
         # Consulta principal uniendo con la subconsulta
         res = db.exec(
             select(Users.UserID, UserDetail.FirstName, UserDetail.LastName1, UserDetail.LastName2, Users.Email,
@@ -478,7 +480,15 @@ class UsersWorkingSimple(BaseModel):
                    case((and_(WorkLogs.IsFinished == False, Shifts.DepartmentID == dept_id), True), else_=False).label(
                        "IsWorking"),
                    UserDetail.JobTitle.label("Role"))
-            .join(UserDepartments, UserDepartments.UserID == Users.UserID)
+            .join(UserDepartments, and_(
+                UserDepartments.UserID == Users.UserID,
+                UserDepartments.DeptID == dept_id,
+                UserDepartments.AssignedDate <= today,
+                or_(
+                    UserDepartments.DeAssignedDate == None,
+                    UserDepartments.DeAssignedDate > today,
+                ),
+            ))
             .join(UserDetail, UserDetail.UserID == Users.UserID)
             .outerjoin(latest_worklogs_subquery, latest_worklogs_subquery.c.UserID == Users.UserID)
             .outerjoin(WorkLogs, and_(
@@ -486,7 +496,9 @@ class UsersWorkingSimple(BaseModel):
                 WorkLogs.WorkLogID == latest_worklogs_subquery.c.latest_worklog_id
             ))
             .outerjoin(Shifts, Shifts.ShiftID == WorkLogs.ShiftID)
-            .where(UserDepartments.DeptID == dept_id)
+            .where(
+                Users.IsInactive == False,
+            )
         ).all()
         seen = set()
         return [cls(UserID=row.UserID, FirstName=row.FirstName, LastName1=row.LastName1, Email=row.Email,

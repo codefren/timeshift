@@ -7,7 +7,7 @@ from PIL import Image
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from pydantic.types import PastDate
-from sqlmodel import desc, asc, Session, select, and_, func, case
+from sqlmodel import desc, asc, Session, select, and_, or_, func, case
 from dependencies import SessionDep, get_current_user, PaginationDep, UsersFiltersDep, require_permission
 from SQLModels import (
     Users,
@@ -183,52 +183,84 @@ def get_detailed_worked_hours(db: SessionDep,
 
 
 @router.get("/subordinates/", response_model=List[UsersWorkingSimple])
-def get_subordinates(db: SessionDep, user: Users = Depends(get_current_user)):
+def get_subordinates(
+    db: SessionDep,
+    user: Users = Depends(get_current_user),
+    include_inactive: bool = Query(False, description="Incluir empleados inactivos o con período expirado"),
+):
     """
     Obtiene todos los usuarios que son subordinados del usuario actual según sus permisos.
-    
-    Los permisos determinan el alcance de los subordinados visibles:
+
+    Por defecto solo devuelve empleados activos (IsInactive=False y con asignación de
+    departamento vigente). Pasar include_inactive=true para incluir también los inactivos,
+    útil para la pantalla de gestión de empleados.
+
+    Los permisos determinan el alcance:
     - Subordinados directos: Siempre visibles (tabla Supervision)
-    - view:OwnDepartment: Todos los miembros del departamento principal del usuario
+    - view:OwnDepartment: Todos los miembros del departamento principal
     - view:SubDepartment: Todos los empleados de todos los subdepartamentos
     - view:FirstSubDepartment: Solo empleados del primer nivel de subdepartamentos
     - view:All: Todos los empleados
     """
-    # Obtener los IDs de usuarios que el usuario actual puede ver
     viewable_user_ids = user.get_viewable_users_ids(db)
-    
-    # Excluir al propio usuario de la lista
+
     if user.UserID in viewable_user_ids:
         viewable_user_ids.remove(user.UserID)
-    
+
     if not viewable_user_ids:
         return []
-    
-    # Consulta para obtener la información de los usuarios visibles
+
     latest_worklogs_subquery = (
         select(WorkLogs.UserID, func.max(WorkLogs.WorkLogID).label("latest_worklog_id"))
         .group_by(WorkLogs.UserID)
         .subquery()
     )
-    
-    # Consulta principal uniendo con la subconsulta
-    res = db.exec(
-        select(Users.UserID, UserDetail.FirstName, UserDetail.LastName1, UserDetail.LastName2, 
+
+    today = datetime.date.today()
+
+    # Condición de JOIN con UserDepartments según el modo solicitado
+    if include_inactive:
+        # Modo admin: JOIN simple por usuario + primario, sin filtrar por período
+        dept_join_cond = and_(
+            UserDepartments.UserID == Users.UserID,
+            UserDepartments.IsPrimary == True,
+        )
+    else:
+        # Modo operacional: solo asignaciones vigentes a día de hoy
+        dept_join_cond = and_(
+            UserDepartments.UserID == Users.UserID,
+            UserDepartments.IsPrimary == True,
+            UserDepartments.AssignedDate <= today,
+            or_(
+                UserDepartments.DeAssignedDate == None,
+                UserDepartments.DeAssignedDate > today,
+            ),
+        )
+
+    q = (
+        select(Users.UserID, UserDetail.FirstName, UserDetail.LastName1, UserDetail.LastName2,
                Users.Email, Users.IsInactive, UserDetail.ContractWeeklyHours,
                UserDepartments.DeptID.label("DeptID"),
                case((WorkLogs.IsFinished == False, True), else_=False).label("IsWorking"),
                UserDetail.JobTitle.label("Role"),
                WorkLogs.LogDate.label("LastWorkingDate"))
         .join(UserDetail, UserDetail.UserID == Users.UserID)
-        .join(UserDepartments, and_(UserDepartments.UserID == Users.UserID, UserDepartments.IsPrimary == True))
+        .join(UserDepartments, dept_join_cond)
         .outerjoin(latest_worklogs_subquery, latest_worklogs_subquery.c.UserID == Users.UserID)
         .outerjoin(WorkLogs, and_(
             WorkLogs.UserID == Users.UserID,
             WorkLogs.WorkLogID == latest_worklogs_subquery.c.latest_worklog_id
         ))
         .where(Users.UserID.in_(list(viewable_user_ids)))
-        .order_by(UserDetail.FirstName, UserDetail.LastName1, UserDetail.LastName2)
-    ).all()
+    )
+
+    if not include_inactive:
+        q = q.where(Users.IsInactive == False)
+
+    # Activos primero, luego inactivos; dentro de cada grupo orden alfabético
+    q = q.order_by(Users.IsInactive.asc(), UserDetail.FirstName, UserDetail.LastName1)
+
+    res = db.exec(q).all()
     seen = set()
     return [UsersWorkingSimple(
         UserID=row.UserID,

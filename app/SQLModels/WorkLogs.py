@@ -623,7 +623,7 @@ class AbsenceTypes(SQLModel, table=True):
         db.commit()
 
 
-class AbsenceStatus(Enum):
+class AbsenceStatus(str, Enum):
     PENDING = "Pending"
     APPROVED = "Approved"
     REJECTED = "Rejected"
@@ -639,10 +639,12 @@ class AbsenceRequests(SQLModel, table=True):
     StartTime: datetime.datetime = Field()
     EndTime: datetime.datetime = Field()
     Reason: str = Field(max_length=255, default="")
-    Status: Enum = Field(default="Pending", sa_column=SQLAlchemyEnum(AbsenceStatus))  # 'Pending', 'Approved', 'Rejected'
+    Status: AbsenceStatus = Field(default=AbsenceStatus.PENDING)
+    TotalDays: float = Field(default=0)
 
     user: "Users" = Relationship(back_populates="absence_requests")
     review: "AbsenceReviews" = Relationship(back_populates="request")
+    absence_type: "AbsenceTypes" = Relationship()
 
     @classmethod
     def get(cls, db: Session, request_id: int) -> Self | None:
@@ -686,7 +688,7 @@ class AbsenceReviews(SQLModel, table=True):
     RequestID: int = Field(foreign_key="AbsenceRequests.RequestID", primary_key=True)
     ReviewerID: int = Field(foreign_key="Users.UserID")
     ReviewDate: datetime.datetime = Field(default_factory=datetime.datetime.now)
-    ReviewResult: Enum = Field(sa_column=SQLAlchemyEnum(AbsenceStatus))
+    ReviewResult: AbsenceStatus = Field(default=AbsenceStatus.PENDING)
     ReviewComments: str = Field(max_length=255, default="")
 
     request: "AbsenceRequests" = Relationship(back_populates="review")

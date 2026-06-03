@@ -5,6 +5,39 @@ from sqlmodel import Session
 from dependencies import CONFIG
 from SQLModels import Departments, DepartmentsRelations, Locations, Companies
 
+
+class EmployeeStats(BaseModel):
+    UserID: int
+    FirstName: str
+    LastName1: str
+    LastName2: Optional[str] = None
+    JobTitle: Optional[str] = None
+    IsWorking: bool
+    IsInactive: bool
+
+
+class DepartmentStats(BaseModel):
+    DeptID: int
+    DeptName: str
+    total_employees: int
+    active_employees: int
+    working_today: int
+    employees: List[EmployeeStats]
+
+
+class CompanyDeptStats(BaseModel):
+    CompanyID: int
+    SocialName: str
+    FiscalName: str
+    total_employees: int
+    active_employees: int
+    working_today: int
+    departments: List[DepartmentStats]
+
+
+class CompanyDeptStatsResponse(BaseModel):
+    companies: List[CompanyDeptStats]
+
 class CompanyResponse(BaseModel):
     company: Companies
     departments: List[Departments] | None = None

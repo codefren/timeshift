@@ -57,6 +57,7 @@ class Users(SQLModel, table=True):
     week_hours_balance: List["UserWeekHoursBalance"] = Relationship(back_populates="user")
     total_hours_balance: "UserTotalHoursBalance" = Relationship(back_populates="user")
     notifications: List["Notifications"] = Relationship(back_populates="user")
+    absence_balances: List["AbsenceBalance"] = Relationship(back_populates="user")
     
     __permissions_set__: set[str] | None = None
     __viewable_users_ids__: set[int] | None = None
@@ -91,7 +92,8 @@ class Users(SQLModel, table=True):
     @classmethod
     def get_list_select(cls, params: "Pagination", filters: "UsersFilters" = None, count_only: bool = False):
         if not count_only:
-            c = select(cls).order_by(params.order(cls.UserID))
+            # Activos (IsInactive=False=0) primero, luego inactivos (True=1)
+            c = select(cls).order_by(cls.IsInactive.asc(), params.order(cls.UserID))
         else:
             c = select(func.count(cls.UserID))
         if not filters:
@@ -109,32 +111,32 @@ class Users(SQLModel, table=True):
             c = c.where(cls.HireDate <= filters.hired_before)
         if filters.job_title is not None:
             c = c.where(cls.JobTitle.like(f"%{filters.job_title}%"))
-        if filters.roles is not None:
+        if getattr(filters, 'roles', None) is not None:
             c = c.where(in_(filters.roles, [x.RoleID for ur in cls.roles for x in ur.permissions]))
-        if filters.department is not None:
+        if getattr(filters, 'department', None) is not None:
             c = c.where(cls.departments.any(UserDepartments.DeptID == filters.department))
-        if filters.updated_before is not None:
+        if getattr(filters, 'updated_before', None) is not None:
             c = c.where(cls.UpdatedAt <= filters.updated_before)
-        if filters.updated_after is not None:
+        if getattr(filters, 'updated_after', None) is not None:
             c = c.where(cls.UpdatedAt >= filters.updated_after)
-        if filters.created_before is not None:
+        if getattr(filters, 'created_before', None) is not None:
             c = c.where(cls.CreatedAt <= filters.created_before)
-        if filters.created_after is not None:
+        if getattr(filters, 'created_after', None) is not None:
             c = c.where(cls.CreatedAt >= filters.created_after)
-        if filters.active is not None:
+        if getattr(filters, 'active', None) is not None:
             c = c.where(cls.IsInactive == (not filters.active))
-        if filters.has_picture is not None:
+        if getattr(filters, 'has_picture', None) is not None:
             subquery2 = select(UserPicture.UserID).where(UserPicture.UserID == cls.UserID).exists()
-            if filters.has_schedule:
+            if getattr(filters, 'has_schedule', None):
                 c = c.where(subquery2)
             else:
                 c = c.where(~subquery2)
-        if filters.supervisor_of is not None:
+        if getattr(filters, 'supervisor_of', None) is not None:
             c = c.where(or_(cls.subordinates.any(Supervision.SubordinateID == cls.UserID),
-                            cls.supervisors.any(Supervision.SupervisorID == filters.supervisor)))
-        if filters.subordinate_of is not None:
+                            cls.supervisors.any(Supervision.SupervisorID == filters.supervisor_of)))
+        if getattr(filters, 'subordinate_of', None) is not None:
             c = c.where(or_(cls.supervisors.any(Supervision.SupervisorID == cls.UserID),
-                            cls.subordinates.any(Supervision.SubordinateID == filters.subordinate)))
+                            cls.subordinates.any(Supervision.SubordinateID == filters.subordinate_of)))
         if filters.owes_hours is not None:
             if filters.owes_hours:
                 c = c.where(cls.total_hours_balance.BalanceHours < 0)

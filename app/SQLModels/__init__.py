@@ -5,3 +5,4 @@ from .Roles import *
 from .Users import *
 from .UserShifts import *
 from .PasswordRecovery import *
+from .Absences import *

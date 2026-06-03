@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from typing import List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, Query
@@ -90,7 +90,12 @@ from dependencies import (
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:59835", "http://localhost:3000"],  # Add your frontend origin here
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:59835",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
@@ -106,6 +111,8 @@ from locations import router as locations_router
 from password_recovery import router as password_recovery_router
 from shifts import router as shifts_router
 from schedules import router as schedules_router
+from absences import router as absences_router
+from holidays import router as holidays_router
 app.include_router(work_logs_router.router)
 app.include_router(users_router.router)
 app.include_router(companies_router.router)
@@ -113,6 +120,8 @@ app.include_router(locations_router.router)
 app.include_router(password_recovery_router)
 app.include_router(shifts_router.router)
 app.include_router(schedules_router.router)
+app.include_router(absences_router.router)
+app.include_router(holidays_router.router)
 
 '''# New tenant-aware routers
 from users.tenant_router import router as tenant_users_router
@@ -174,8 +183,8 @@ def login_for_access_token(bac: BackgroundTasks,
     
     bac.add_task(log_back, f"Access token created for user {form_data.username}", logger, 'debug')
     resp.set_cookie(key='auth_token', value=access_token)
-    resp.set_cookie(key='expires_at', value=(datetime.now() + access_token_expires).isoformat())
-    resp.set_cookie(key='refresh_expires_at', value=(datetime.now() + refresh_token_expires).isoformat())
+    resp.set_cookie(key='expires_at', value=(datetime.now(timezone.utc) + access_token_expires).isoformat())
+    resp.set_cookie(key='refresh_expires_at', value=(datetime.now(timezone.utc) + refresh_token_expires).isoformat())
     resp.set_cookie(key='refresh_token', value=refresh_token)
     resp.set_cookie(key='user_id', value=user.UserID)
     return {
@@ -183,8 +192,8 @@ def login_for_access_token(bac: BackgroundTasks,
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "user_id": user.UserID, 
-        "expires": datetime.now() + access_token_expires,
-        "refresh_expires": datetime.now() + refresh_token_expires,
+        "expires": datetime.now(timezone.utc) + access_token_expires,
+        "refresh_expires": datetime.now(timezone.utc) + refresh_token_expires,
         "permissions": user.get_permissions()
     }
 
@@ -227,8 +236,8 @@ def refresh_access_token(refresh_request: RefreshRequest, db: Session = Depends(
             "refresh_token": refresh_token,
             "token_type": "bearer",
             "user_id": user.UserID,
-            "expires": datetime.now() + access_token_expires,
-            "refresh_expires": datetime.now() + refresh_token_expires,
+            "expires": datetime.now(timezone.utc) + access_token_expires,
+            "refresh_expires": datetime.now(timezone.utc) + refresh_token_expires,
             "permissions": user.get_permissions()
         }
     except Exception as e:

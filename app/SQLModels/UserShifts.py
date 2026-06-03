@@ -47,7 +47,7 @@ class Shifts(SQLModel, table=True):
     def get_actual(cls, db: Session,
                    user_id: int,
                    day: date = datetime.now().date(),
-                   before: time = (datetime.now()-timedelta(minutes=os.environ.get("SHIFT_BEFORE_MINUTES_MARGIN",15))).time()) -> Optional[Self]:
+                   before: time = (datetime.now()-timedelta(minutes=int(os.environ.get("SHIFT_BEFORE_MINUTES_MARGIN", 15)))).time()) -> Optional[Self]:
         now = datetime.now().time()
         res = db.exec(select(cls).where(and_(cls.UserID == user_id,
                                          cls.Date == day,
@@ -85,7 +85,8 @@ class Shifts(SQLModel, table=True):
         shift = cls(**kwargs)
         if shift.intersects(db):
             user = Users.get(db, shift.UserID)
-            raise ValueError(f"El turno con fecha {shift.Date}, de {shift.StartTime.strftime("%H:%M")} a {shift.EndTime.strftime("%H:%M")} para el usuario {user.details.FirstName if user and user.details else shift.UserID} colisiona con otro turno existente.")
+            nombre = user.details.FirstName if user and user.details else shift.UserID
+            raise ValueError(f"El turno con fecha {shift.Date}, de {shift.StartTime.strftime('%H:%M')} a {shift.EndTime.strftime('%H:%M')} para el usuario {nombre} colisiona con otro turno existente.")
         shift.get_location_id(db)
         db.add(shift)
         db.commit()
