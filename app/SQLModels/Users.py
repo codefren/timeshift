@@ -1020,8 +1020,14 @@ class UserDepartments(SQLModel, table=True):
     def update_or_create(self, db:Session) -> Self:
         model_db = self.get(db, self.UserID, self.DeptID)
         if model_db:
-            self.AssignedDate = model_db.AssignedDate
-            return model_db.update(db, **self.model_dump(mode='python')) if model_db.IsPrimary != self.IsPrimary else model_db
+            # La PK es (UserID, DeptID, AssignedDate): no se tocan esas columnas.
+            # Se actualizan solo los campos mutables.
+            model_db.IsPrimary = self.IsPrimary
+            model_db.DeAssignedDate = self.DeAssignedDate
+            db.add(model_db)
+            db.commit()
+            db.refresh(model_db)
+            return model_db
         else:
             return self._create(db)
 
