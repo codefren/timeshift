@@ -29,11 +29,14 @@ logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)
 async def lifespan(app: FastAPI):
     logger.info("🚀 Starting application...")
     try:
-        logger.info("📦 Initializing database...")
-        init_db()
-        logger.info("✅ Database initialized successfully")
-        create_first_data(engine)
-        logger.info("✅ First data created successfully")
+        if os.getenv("SKIP_DB_INIT", "false").lower() in ("1", "true", "yes"):
+            logger.info("⏭️ SKIP_DB_INIT activo — se conecta a la BD existente sin crear esquema ni datos iniciales")
+        else:
+            logger.info("📦 Initializing database...")
+            init_db()
+            logger.info("✅ Database initialized successfully")
+            create_first_data(engine)
+            logger.info("✅ First data created successfully")
         logger.info("✅ Application startup completed")
         yield
     except Exception as e:

@@ -1,0 +1,11 @@
+env/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+*.md
+app/logs/*
+.env
+app/.env
