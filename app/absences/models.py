@@ -8,12 +8,19 @@ from SQLModels.WorkLogs import AbsenceStatus
 class AbsenceTypeCreateRequest(BaseModel):
     type_name: str = Field(max_length=50)
     is_counted: bool = True
+    category: str = "leave"
+    requires_balance: bool = False
+    default_annual_days: Optional[float] = None
 
 
 class AbsenceTypeResponse(BaseModel):
     AbsenceTypeID: int
     TypeName: str
     IsCounted: bool
+    Category: str = "pause"
+    RequiresBalance: bool = False
+    DefaultAnnualDays: Optional[float] = None
+    IsActive: bool = True
 
     @classmethod
     def from_type(cls, at: "AbsenceTypes") -> "AbsenceTypeResponse":
@@ -21,6 +28,10 @@ class AbsenceTypeResponse(BaseModel):
             AbsenceTypeID=at.AbsenceTypeID,
             TypeName=at.TypeName,
             IsCounted=at.IsCounted,
+            Category=getattr(at, "Category", "pause"),
+            RequiresBalance=getattr(at, "RequiresBalance", False),
+            DefaultAnnualDays=getattr(at, "DefaultAnnualDays", None),
+            IsActive=getattr(at, "IsActive", True),
         )
 
 

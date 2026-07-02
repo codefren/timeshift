@@ -29,8 +29,11 @@ router = APIRouter(
 # ------------------------------------------------------------------ #
 
 @router.get("/types/", response_model=List[AbsenceTypeResponse])
-def list_absence_types(db: SessionDep) -> List[AbsenceTypeResponse]:
-    types = AbsencesService.list_types(db)
+def list_absence_types(
+        db: SessionDep,
+        category: Optional[str] = Query(None, description="Filtrar por categoría: 'pause' o 'leave'"),
+) -> List[AbsenceTypeResponse]:
+    types = AbsencesService.list_types(db, category=category)
     return [AbsenceTypeResponse.from_type(t) for t in types]
 
 
@@ -40,7 +43,12 @@ def create_absence_type(
         req: AbsenceTypeCreateRequest,
         current_user: Users = Depends(require_permission("manage:Absences")),
 ) -> AbsenceTypeResponse:
-    at = AbsencesService.create_type(db, req.type_name, req.is_counted)
+    at = AbsencesService.create_type(
+        db, req.type_name, req.is_counted,
+        category=req.category,
+        requires_balance=req.requires_balance,
+        default_annual_days=req.default_annual_days,
+    )
     log.info(f"AbsenceType '{at.TypeName}' created by user {current_user.UserID}")
     return AbsenceTypeResponse.from_type(at)
 
@@ -205,3 +213,16 @@ def update_balance(
     )
     log.info(f"Balance updated for user {req.user_id} by {current_user.UserID}: {req.accrued_days} days")
     return AbsenceBalanceResponse.from_balance(balance)
+
+
+@router.post("/balance/seed/")
+def seed_balances(
+        db: SessionDep,
+        year: Optional[int] = Query(default=None, description="Año a sembrar (por defecto, el actual)"),
+        current_user: Users = Depends(require_permission("manage:Absences")),
+) -> dict:
+    """Siembra el saldo anual (p.ej. Vacaciones=31) para todos los empleados activos. Idempotente."""
+    target_year = year or datetime.date.today().year
+    created = AbsencesService.seed_balances_for_active_users(db, target_year)
+    log.info(f"Seeded {created} absence balances for {target_year} by user {current_user.UserID}")
+    return {"year": target_year, "created": created}

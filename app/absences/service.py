@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from SQLModels.Absences import Holidays, AbsenceBalance
 from SQLModels.WorkLogs import (
-    AbsenceTypes, AbsenceRequests, AbsenceReviews, AbsenceStatus,
+    AbsenceTypes, AbsenceRequests, AbsenceReviews, AbsenceStatus, AbsenceCategory,
     WorkLogs, WorkLogLines, WorkLogTotals,
 )
 from SQLModels.Users import Users, UserDetail
@@ -96,12 +96,20 @@ class AbsencesService:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def list_types(db: Session) -> Sequence[AbsenceTypes]:
-        return AbsenceTypes.get_all(db)
+    def list_types(db: Session, category: str | None = None) -> Sequence[AbsenceTypes]:
+        return AbsenceTypes.get_all(db, category=category)
 
     @staticmethod
-    def create_type(db: Session, type_name: str, is_counted: bool) -> AbsenceTypes:
-        at = AbsenceTypes(TypeName=type_name, IsCounted=is_counted)
+    def create_type(db: Session, type_name: str, is_counted: bool,
+                    category: str = "leave", requires_balance: bool = False,
+                    default_annual_days: float | None = None) -> AbsenceTypes:
+        at = AbsenceTypes(
+            TypeName=type_name,
+            IsCounted=is_counted,
+            Category=category,
+            RequiresBalance=requires_balance,
+            DefaultAnnualDays=default_annual_days,
+        )
         at._create(db)
         return at
 
@@ -137,13 +145,27 @@ class AbsencesService:
                        start_time: datetime.datetime,
                        end_time: datetime.datetime,
                        reason: str,
-                       validate_balance: bool = True) -> AbsenceRequests:
+                       validate_balance: bool | None = None) -> AbsenceRequests:
+        # El tipo debe existir y ser solicitable (categoría 'leave')
+        absence_type = AbsenceTypes.get(db, absence_type_id)
+        if absence_type is None:
+            raise ValueError("Tipo de ausencia no válido")
+        if getattr(absence_type, "Category", AbsenceCategory.PAUSE.value) != AbsenceCategory.LEAVE.value:
+            raise ValueError("Este tipo de ausencia no es solicitable")
+
+        # Por defecto, validar saldo solo si el tipo lo requiere
+        # (Vacaciones sí; Médico y Permiso escolar son ilimitados)
+        if validate_balance is None:
+            validate_balance = bool(getattr(absence_type, "RequiresBalance", False))
+
         total_days = AbsencesService.calculate_working_days(
             start_time.date(), end_time.date(), db
         )
 
         if validate_balance:
             year = start_time.year
+            # Asegura que el saldo del año exista con su cupo (31) antes de validar
+            AbsencesService.ensure_annual_balances(db, user_id, year)
             balance = AbsenceBalance.get_or_create(db, user_id, absence_type_id, year)
             if balance.remaining_days < total_days:
                 raise ValueError(
@@ -209,11 +231,15 @@ class AbsencesService:
         )
         review._create(db)
 
-        year = req.StartTime.year
-        balance = AbsenceBalance.get_or_create(db, req.UserID, req.AbsenceTypeID, year)
-        balance.update(db,
-                       UsedDays=balance.UsedDays + req.TotalDays,
-                       PendingDays=max(0.0, balance.PendingDays - req.TotalDays))
+        # El saldo solo se mueve en tipos con cupo (Vacaciones).
+        # Médico y Permiso escolar son ilimitados: no generan registro de saldo.
+        absence_type = req.absence_type or AbsenceTypes.get(db, req.AbsenceTypeID)
+        if absence_type and getattr(absence_type, "RequiresBalance", False):
+            year = req.StartTime.year
+            balance = AbsenceBalance.get_or_create(db, req.UserID, req.AbsenceTypeID, year)
+            balance.update(db,
+                           UsedDays=balance.UsedDays + req.TotalDays,
+                           PendingDays=max(0.0, balance.PendingDays - req.TotalDays))
 
         current = req.StartTime.date()
         end = req.EndTime.date()
@@ -262,9 +288,42 @@ class AbsencesService:
     # ------------------------------------------------------------------ #
 
     @staticmethod
+    def ensure_annual_balances(db: Session, user_id: int, year: int) -> list[AbsenceBalance]:
+        """Crea (si faltan) los saldos anuales del usuario para cada tipo 'leave'
+        con cupo (RequiresBalance + DefaultAnnualDays), p.ej. Vacaciones = 31.
+        Idempotente: no toca los que ya existen. Devuelve los creados."""
+        created: list[AbsenceBalance] = []
+        for at in AbsenceTypes.get_all(db, category=AbsenceCategory.LEAVE.value):
+            if not getattr(at, "RequiresBalance", False) or not at.DefaultAnnualDays:
+                continue
+            if AbsenceBalance.get(db, user_id, at.AbsenceTypeID, year) is None:
+                bal = AbsenceBalance(
+                    UserID=user_id,
+                    AbsenceTypeID=at.AbsenceTypeID,
+                    Year=year,
+                    AccruedDays=float(at.DefaultAnnualDays),
+                )
+                bal._create(db)
+                created.append(bal)
+        return created
+
+    @staticmethod
+    def seed_balances_for_active_users(db: Session, year: int) -> int:
+        """Siembra los saldos anuales para todos los empleados activos. Idempotente.
+        Devuelve el número de saldos creados."""
+        users = db.exec(select(Users).where(Users.IsInactive == False)).all()  # noqa: E712
+        created = 0
+        for u in users:
+            created += len(AbsencesService.ensure_annual_balances(db, u.UserID, year))
+        return created
+
+    @staticmethod
     def get_balance(db: Session,
                     user_id: int,
                     year: int | None = None) -> Sequence[AbsenceBalance]:
+        # Auto-sembrar el año consultado (o el actual) para que Vacaciones
+        # aparezca siempre con su cupo aunque no se haya solicitado nada aún.
+        AbsencesService.ensure_annual_balances(db, user_id, year or datetime.date.today().year)
         return AbsenceBalance.get_by_user(db, user_id, year)
 
     @staticmethod

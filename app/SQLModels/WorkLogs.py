@@ -574,12 +574,25 @@ class WorkLogTotals(SQLModel, table=True):
         }
 
 
+class AbsenceCategory(str, Enum):
+    """Discrimina los dos usos de AbsenceTypes."""
+    PAUSE = "pause"   # motivo de pausa dentro de un fichaje (Comer, Compras, ...)
+    LEAVE = "leave"   # ausencia solicitable (Vacaciones, Médico, Permiso escolar)
+
+
 class AbsenceTypes(SQLModel, table=True):
     __tablename__ = "AbsenceTypes"
 
     AbsenceTypeID: int | None = Field(default=None, primary_key=True)
     TypeName: str = Field(max_length=50)
     IsCounted: bool = Field(default=True)
+    # 'pause' = motivo de pausa en fichajes; 'leave' = ausencia solicitable
+    Category: str = Field(default=AbsenceCategory.PAUSE.value, max_length=10)
+    # Si descuenta saldo (Vacaciones) o es ilimitada (Médico, Permiso escolar)
+    RequiresBalance: bool = Field(default=False)
+    # Cupo anual por defecto del saldo (p.ej. 31 para Vacaciones)
+    DefaultAnnualDays: Optional[float] = Field(default=None, nullable=True)
+    IsActive: bool = Field(default=True)
 
     workloglines: List["WorkLogLines"] = Relationship(back_populates="absence")
 
@@ -588,8 +601,11 @@ class AbsenceTypes(SQLModel, table=True):
         return db.exec(select(cls).where(cls.AbsenceTypeID == absence_type_id)).first()
 
     @classmethod
-    def get_all(cls, db: Session) -> Sequence[Self] | None:
-        return db.exec(select(cls)).all()
+    def get_all(cls, db: Session, category: str | None = None) -> Sequence[Self]:
+        q = select(cls)
+        if category is not None:
+            q = q.where(cls.Category == category)
+        return db.exec(q).all()
 
     @classmethod
     def exists(cls, db: Session, absence_type_id: int) -> bool:
