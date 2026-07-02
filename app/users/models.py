@@ -8,7 +8,7 @@ from dependencies import random_string, Pagination
 from typing import Optional, List, Set, Dict, Any, Self, Sequence, Tuple, Union
 from pydantic.types import datetime as datetype, PastDate
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from sqlmodel import Session, desc, select, case, and_, or_
+from sqlmodel import Session, desc, select, case, and_, or_, delete
 from passlib.hash import bcrypt
 import pandas as pd
 from SQLModels import Users, UserDetail, UserAddress, UserPicture, Supervision, Roles, Schedules, \
@@ -52,6 +52,9 @@ class UserCompleteResponse(BaseModel):
     current_worklog: Optional[WorkLogResponse]
     schedule: Optional[Schedules] = None
     permissions: Optional[List[str]] = None
+    # Contraseña temporal en claro, devuelta SOLO al crear el usuario para poder
+    # comunicársela. Es None en el resto de respuestas.
+    temporary_password: Optional[str] = None
 
     @classmethod
     def from_users(cls, db: Session, user: Users) -> Self:
@@ -316,22 +319,61 @@ class UserCreation(BaseModel):
                           ContractWeeklyHours=self.detail.ContractWeeklyHours,
                           ).update_or_create(db)
 
+    @staticmethod
+    def _cleanup_partial_user(db: Session, user_id: int) -> None:
+        """Elimina un usuario creado a medias (y sus filas asociadas) tras un fallo,
+        para no dejar datos parciales. Best-effort: los errores se ignoran."""
+        try:
+            db.rollback()  # descarta cualquier cambio pendiente sin commitear
+        except Exception:
+            pass
+        # Orden hijo → padre para respetar las claves foráneas
+        statements = [
+            delete(RoleUsers).where(RoleUsers.UserID == user_id),
+            delete(UserDepartments).where(UserDepartments.UserID == user_id),
+            delete(Supervision).where(or_(Supervision.SupervisorID == user_id,
+                                          Supervision.SubordinateID == user_id)),
+            delete(UserPicture).where(UserPicture.UserID == user_id),
+            delete(UserDetail).where(UserDetail.UserID == user_id),
+            delete(UserAddress).where(UserAddress.UserID == user_id),
+            delete(Users).where(Users.UserID == user_id),
+        ]
+        for stmt in statements:
+            try:
+                db.exec(stmt)
+                db.commit()
+            except Exception:
+                db.rollback()
+
     def create(self, db: Session) -> UserCompleteResponse:
         if Users.exists(db, self.detail.Email):
             raise ValueError("Email already exists")
         self.validate_departments(db)
         self.validate_emails_exists(db, self.detail.SupervisorEmails)
         self.validate_emails_exists(db, self.detail.SubordinatesEmails)
-        return UserCompleteResponse(user=self.create_user(db),
-                                    picture=self.create_picture(db),
-                                    #schedule=self.create_schedule(db),
-                                    departments=self.create_departments(db),
-                                    address=self.create_address(db),
-                                    detail=self.create_detail(db),
-                                    supervisors=self.create_supervisors(db),
-                                    subordinates=self.create_subordinates(db),
-                                    current_worklog=None,
-                                    )
+
+        user = None
+        try:
+            user = self.create_user(db)
+            # self.Password contiene la contraseña temporal en claro tras create_user
+            temporary_password = self.Password
+            return UserCompleteResponse(
+                user=user,
+                picture=self.create_picture(db),
+                #schedule=self.create_schedule(db),
+                departments=self.create_departments(db),
+                address=self.create_address(db),
+                detail=self.create_detail(db),
+                supervisors=self.create_supervisors(db),
+                subordinates=self.create_subordinates(db),
+                current_worklog=None,
+                temporary_password=temporary_password,
+            )
+        except Exception:
+            # Atomicidad: si algo falla tras crear al usuario, se elimina lo parcial
+            if user is not None and getattr(user, "UserID", None):
+                self._cleanup_partial_user(db, user.UserID)
+            raise
 
 
 class UserUpdate(UserCreation):
