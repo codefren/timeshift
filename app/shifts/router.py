@@ -15,7 +15,11 @@ from SQLModels import (
 )
 from shifts.models import SingleShiftCreateRequest, ShiftUpdateRequest, ShiftResponse
 from shifts.service import ShiftsService
-from scheduling.service import generate_proposal
+# OJO: NO importar scheduling.service a nivel de módulo. Arrastra ortools (solver
+# CP-SAT), una dependencia opcional y pesada del auto-scheduler. Si ortools no está
+# instalado en el servidor, un import de módulo tumbaría TODA la app (login, fichar,
+# todo) → 502. Se importa de forma perezosa dentro del endpoint, así un fallo de esa
+# dependencia solo afecta a "Sugerir horario", no al resto del backend.
 from scheduling.schemas import GenerateScheduleRequest, GenerateScheduleResponse
 
 log = logging.getLogger(__name__)
@@ -36,6 +40,17 @@ def generate_schedule(
     """Genera una propuesta de horario (auto-scheduler offline) para un departamento
     y semana, a partir del histórico. NO persiste: devuelve turnos propuestos + reporte
     para revisar y publicar desde el constructor de horarios."""
+    # Import perezoso: solo aquí se carga ortools. Si no está instalado, devolvemos
+    # un 503 claro en vez de romper el arranque de toda la app.
+    try:
+        from scheduling.service import generate_proposal
+    except ImportError as e:
+        log.error(f"Auto-scheduler no disponible (falta dependencia): {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "El generador automático de horarios no está disponible "
+                               "en este servidor (falta la dependencia 'ortools')."},
+        )
     try:
         return generate_proposal(db, req.department_id, req.week_start)
     except ValueError as e:
