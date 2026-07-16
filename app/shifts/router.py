@@ -15,6 +15,8 @@ from SQLModels import (
 )
 from shifts.models import SingleShiftCreateRequest, ShiftUpdateRequest, ShiftResponse
 from shifts.service import ShiftsService
+from scheduling.service import generate_proposal
+from scheduling.schemas import GenerateScheduleRequest, GenerateScheduleResponse
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +26,21 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
     responses={404: {"description": "Not found"}},
 )
+
+@router.post("/generate/", response_model=GenerateScheduleResponse)
+def generate_schedule(
+        req: GenerateScheduleRequest,
+        db: SessionDep = SessionDep,
+        current_user: Users = Depends(require_permission("manage:Shifts")),
+):
+    """Genera una propuesta de horario (auto-scheduler offline) para un departamento
+    y semana, a partir del histórico. NO persiste: devuelve turnos propuestos + reporte
+    para revisar y publicar desde el constructor de horarios."""
+    try:
+        return generate_proposal(db, req.department_id, req.week_start)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
 
 @router.post("/", response_model=Shifts | List[Shifts])
 def create_single_shift(
