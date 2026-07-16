@@ -1,13 +1,21 @@
-"""Modelo CP-SAT y resolución del auto-scheduler.
+"""Generador de horarios por heurística voraz, en Python puro (sin ortools).
 
-Formulación por slots: works[e,d,t] = el empleado e trabaja el día d en el slot t.
-Un turno = tramo contiguo de works=1. Se permiten <= MAX_SHIFTS_PER_DAY tramos por día,
-cada uno con duración en [MIN, MAX]. La cobertura y las horas de contrato son objetivos blandos.
+Motivo: los binarios nativos de ortools (CP-SAT) hacen *segfault* en CPUs antiguas
+o virtualizadas que no soportan las instrucciones que requieren (AVX2, etc.). Esta
+implementación produce una propuesta razonable sin dependencias nativas, así que
+funciona en cualquier servidor.
+
+Estrategia: para cada día se recorren los empleados disponibles (priorizando a los
+que están más por debajo de sus horas de contrato) y a cada uno se le asigna el
+mejor tramo contiguo posible —de duración válida [MIN, MAX], respetando el tope
+diario y el máximo de tramos/día, y dejando un hueco entre tramos de un mismo día—
+que cubra más demanda aún sin cubrir. Se deja de asignar cuando no queda demanda que
+un empleado pueda cubrir (para no generar exceso). Es una heurística: no garantiza
+el óptimo, pero es adecuada para una propuesta que el responsable revisa antes de
+publicar. Mantiene el mismo API público que la versión CP-SAT anterior.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
-
-from ortools.sat.python import cp_model
+from typing import Dict, List, Optional, Tuple
 
 from .config import SchedulerConfig
 from .demand import DemandGrid
@@ -42,110 +50,112 @@ class SolveResult:
 DAYS = 7
 
 
+def _best_window(blocked_row: List[bool], assigned_row: List[int], demand_row: List[int],
+                 min_slots: int, max_len: int, T: int) -> Optional[Tuple[int, int, int, int]]:
+    """Mejor tramo contiguo para un empleado en un día.
+
+    Devuelve (marginal, -excess, start, length) o None. 'marginal' = nº de slots con
+    demanda aún sin cubrir que el tramo cubriría; se maximiza marginal y, a igualdad,
+    se minimiza el exceso (slots del tramo que no aportan cobertura). Un slot está
+    'blocked' si no está disponible, ya lo ocupa el empleado, o es adyacente a un
+    tramo ya asignado (para forzar un hueco entre tramos partidos)."""
+    best: Optional[Tuple[int, int, int, int]] = None
+    t = 0
+    while t < T:
+        if blocked_row[t]:
+            t += 1
+            continue
+        # run contiguo utilizable [t, run_end)
+        run_end = t
+        while run_end < T and not blocked_row[run_end]:
+            run_end += 1
+        # probar tramos que empiecen dentro del run y quepan con el mínimo
+        for s in range(t, run_end - min_slots + 1):
+            limit = min(max_len, run_end - s)
+            marginal = 0
+            for length in range(1, limit + 1):
+                slot = s + length - 1
+                if assigned_row[slot] < demand_row[slot]:
+                    marginal += 1
+                if length >= min_slots:
+                    excess = length - marginal
+                    cand = (marginal, -excess, s, length)
+                    if best is None or cand > best:
+                        best = cand
+        t = run_end
+    return best
+
+
 def solve(employees: List[EmployeeInput], grid: DemandGrid,
           cfg: SchedulerConfig) -> SolveResult:
     T = grid.num_slots
     E = len(employees)
-    m = cp_model.CpModel()
-
-    works: Dict[Tuple[int, int, int], cp_model.IntVar] = {}
-    for e in range(E):
-        for d in range(DAYS):
-            for t in range(T):
-                if employees[e].avail[d][t]:
-                    works[e, d, t] = m.NewBoolVar(f"w_{e}_{d}_{t}")
-                else:
-                    works[e, d, t] = m.NewConstant(0)
-
+    slot_hours = cfg.slot_hours
     min_slots = cfg.min_slots
     max_slots = cfg.max_slots
+    max_daily_slots = cfg.max_daily_slots
+    max_shifts = cfg.MAX_SHIFTS_PER_DAY
 
-    for e in range(E):
-        for d in range(DAYS):
-            starts = []
-            for t in range(T):
-                s = m.NewBoolVar(f"s_{e}_{d}_{t}")
-                prev = works[e, d, t - 1] if t > 0 else 0
-                # s == works[t] AND NOT prev
-                m.Add(s <= works[e, d, t])
-                m.Add(s <= 1 - prev)
-                m.Add(s >= works[e, d, t] - prev)
-                starts.append(s)
-                # duración mínima: si empieza en t, works[t..t+min-1]=1
-                for k in range(1, min_slots):
-                    if t + k < T:
-                        m.Add(works[e, d, t + k] >= s)
-                    else:
-                        m.Add(s == 0)  # no cabe el mínimo → no puede empezar aquí
-            # como máximo N tramos por día
-            m.Add(sum(starts) <= cfg.MAX_SHIFTS_PER_DAY)
-            # duración máxima: ninguna ventana de (max+1) slots totalmente trabajada
-            for t0 in range(0, T - max_slots):
-                m.Add(sum(works[e, d, t0 + k] for k in range(max_slots + 1)) <= max_slots)
-            # tope de horas por día (suma de ambos tramos)
-            m.Add(sum(works[e, d, t] for t in range(T)) <= cfg.max_daily_slots)
+    demand = [[grid.get(d, t) for t in range(T)] for d in range(DAYS)]
+    assigned = [[0] * T for _ in range(DAYS)]
 
-    obj = []
+    target_slots = [max(0, int(round(e.contract_hours / slot_hours))) for e in employees]
+    weekly_slots = [0] * E
 
-    # Cobertura (blanda): acercarse a la demanda por slot
-    coverage_terms: Dict[Tuple[int, int], cp_model.IntVar] = {}
+    result = SolveResult(status="FEASIBLE")
+
+    for d in range(DAYS):
+        demand_row = demand[d]
+        assigned_row = assigned[d]
+        if sum(demand_row) == 0:
+            continue
+
+        occ = [[False] * T for _ in range(E)]   # slots que ya trabaja cada empleado ese día
+        daily_slots = [0] * E
+        shifts_count = [0] * E
+
+        # empleados más por debajo de su contrato primero (reparto justo de horas)
+        order = sorted(range(E), key=lambda e: weekly_slots[e] - target_slots[e])
+
+        for e in order:
+            avail_row = employees[e].avail[d]
+            if not any(avail_row):
+                continue
+            while shifts_count[e] < max_shifts:
+                remaining_daily = max_daily_slots - daily_slots[e]
+                if remaining_daily < min_slots:
+                    break
+                max_len = min(max_slots, remaining_daily)
+
+                # bloqueado = no disponible, ya ocupado, o adyacente a un tramo propio
+                occ_e = occ[e]
+                blocked = [
+                    (not avail_row[t]) or occ_e[t]
+                    or (t > 0 and occ_e[t - 1]) or (t < T - 1 and occ_e[t + 1])
+                    for t in range(T)
+                ]
+                best = _best_window(blocked, assigned_row, demand_row, min_slots, max_len, T)
+                if best is None or best[0] <= 0:
+                    break  # no cubre demanda nueva → no añadir exceso
+
+                _marginal, _neg_excess, s, length = best
+                for k in range(s, s + length):
+                    occ_e[k] = True
+                    assigned_row[k] += 1
+                daily_slots[e] += length
+                weekly_slots[e] += length
+                shifts_count[e] += 1
+                result.shifts.append(ProposedShift(employees[e].user_id, d, s, s + length))
+
+    # reporte de cobertura y horas
     for d in range(DAYS):
         for t in range(T):
-            dem = grid.get(d, t)
-            cov = sum(works[e, d, t] for e in range(E))
-            short = m.NewIntVar(0, E, f"short_{d}_{t}")
-            exc = m.NewIntVar(0, E, f"exc_{d}_{t}")
-            m.Add(short >= dem - cov)
-            m.Add(exc >= cov - dem)
-            obj.append(cfg.W_SHORTFALL * short)
-            obj.append(cfg.W_EXCESS * exc)
-            coverage_terms[d, t] = short
-
-    # Horas de contrato (blanda)
-    for e in range(E):
-        target = int(round(employees[e].contract_hours / cfg.slot_hours))
-        total = sum(works[e, d, t] for d in range(DAYS) for t in range(T))
-        dev = m.NewIntVar(0, DAYS * T, f"dev_{e}")
-        m.Add(dev >= total - target)
-        m.Add(dev >= target - total)
-        obj.append(cfg.W_CONTRACT * dev)
-
-    m.Minimize(sum(obj))
-
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = cfg.MAX_SOLVE_SECONDS
-    solver.parameters.num_search_workers = 8
-    status = solver.Solve(m)
-    status_name = solver.StatusName(status)
-
-    result = SolveResult(status=status_name)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return result
-
-    # Extraer turnos (tramos contiguos de works=1)
-    for e in range(E):
-        for d in range(DAYS):
-            t = 0
-            while t < T:
-                if solver.Value(works[e, d, t]) == 1:
-                    start = t
-                    while t < T and solver.Value(works[e, d, t]) == 1:
-                        t += 1
-                    result.shifts.append(
-                        ProposedShift(employees[e].user_id, d, start, t)
-                    )
-                else:
-                    t += 1
-
-    # Reporte de cobertura y horas
-    for d in range(DAYS):
-        for t in range(T):
-            assigned = sum(solver.Value(works[e, d, t]) for e in range(E))
-            result.coverage[d, t] = (assigned, grid.get(d, t))
-            result.total_shortfall_slots += max(0, grid.get(d, t) - assigned)
+            asg = assigned[d][t]
+            dem = demand[d][t]
+            result.coverage[d, t] = (asg, dem)
+            result.total_shortfall_slots += max(0, dem - asg)
 
     for e in range(E):
-        slots = sum(solver.Value(works[e, d, t]) for d in range(DAYS) for t in range(T))
-        result.hours_by_user[employees[e].user_id] = slots * cfg.slot_hours
+        result.hours_by_user[employees[e].user_id] = weekly_slots[e] * slot_hours
 
     return result

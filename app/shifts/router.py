@@ -40,21 +40,21 @@ def generate_schedule(
     """Genera una propuesta de horario (auto-scheduler offline) para un departamento
     y semana, a partir del histórico. NO persiste: devuelve turnos propuestos + reporte
     para revisar y publicar desde el constructor de horarios."""
-    # Import perezoso: solo aquí se carga ortools. Si no está instalado, devolvemos
-    # un 503 claro en vez de romper el arranque de toda la app.
-    try:
-        from scheduling.service import generate_proposal
-    except ImportError as e:
-        log.error(f"Auto-scheduler no disponible (falta dependencia): {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"message": "El generador automático de horarios no está disponible "
-                               "en este servidor (falta la dependencia 'ortools')."},
-        )
+    # El generador es heurística en Python puro (sin ortools/CP-SAT), así que no
+    # depende de librerías nativas y funciona en cualquier CPU. Import perezoso por
+    # prudencia; un fallo inesperado se registra con traceback y se devuelve como
+    # error claro, sin tumbar el proceso.
+    from scheduling.service import generate_proposal
     try:
         return generate_proposal(db, req.department_id, req.week_start)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        log.error(f"Error generando propuesta de horario: {e}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"message": f"No se pudo generar la propuesta: {e}"},
+        )
 
 
 @router.post("/", response_model=Shifts | List[Shifts])
