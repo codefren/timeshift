@@ -11,12 +11,22 @@
 --
 -- init_worklogs_triggers() solo crea el trigger si NO existe, así que nunca
 -- reemplaza al viejo. Este script lo sustituye por la versión correcta
--- (idéntica a app/db/triggers.py) con CREATE OR ALTER.
+-- (idéntica a app/db/triggers.py) mediante DROP + CREATE.
 --
--- Idempotente. Motor: SQL Server (T-SQL). Base de datos: ShiftZone.
+-- Compatible con SQL Server 2008 R2: NO usa CREATE OR ALTER (que es 2016+).
+-- CREATE TRIGGER debe ser la primera sentencia de su batch, por eso el DROP
+-- condicional va en un batch aparte (separado por GO).
+--
+-- Idempotente. Motor: SQL Server (T-SQL).
+-- ⚠️ Ejecutar sobre la BASE DEL CLIENTE (selecciónala en el desplegable de
+--    SSMS/Azure Data Studio, o añade al principio:  USE [NombreBase]; GO ).
 -- ============================================================================
 
-CREATE OR ALTER TRIGGER [dbo].[trg_UpdateUserHoursBalance]
+IF OBJECT_ID('dbo.trg_UpdateUserHoursBalance', 'TR') IS NOT NULL
+    DROP TRIGGER [dbo].[trg_UpdateUserHoursBalance];
+GO
+
+CREATE TRIGGER [dbo].[trg_UpdateUserHoursBalance]
 ON [dbo].[WorkLogTotals]
 AFTER INSERT, UPDATE, DELETE
 AS
