@@ -191,6 +191,11 @@ class DepartmentUpdate(BaseModel):
                                    dept.child_departments else [])
 
 
+class ForceLocationUpdate(BaseModel):
+    """Payload para activar/desactivar el geofence de fichaje de un departamento."""
+    ForceLocation: bool
+
+
 class CompanyUpdate(BaseModel):
     CompanyID: int | None = Field(None, exclude=True)
     SocialName: Optional[str] = Field(None, max_length=50)

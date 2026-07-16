@@ -5,7 +5,7 @@ from typing import List, Optional, Sequence
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 from sqlmodel import desc, asc, select, and_, or_, case, func
-from dependencies import SessionDep, get_current_user, PaginationDep, CompanyFiltersDep, DepartmentFiltersDep
+from dependencies import SessionDep, get_current_user, require_permission, PaginationDep, CompanyFiltersDep, DepartmentFiltersDep
 from SQLModels import (
     Users,
     UserDetail,
@@ -16,7 +16,7 @@ from SQLModels import (
 )
 from .models import (
     DepartmentCreation, DepartmentsResponse, CompanyResponse, CompanyUpdate, DepartmentUpdate,
-    EmployeeStats, DepartmentStats, CompanyDeptStats, CompanyDeptStatsResponse
+    ForceLocationUpdate, EmployeeStats, DepartmentStats, CompanyDeptStats, CompanyDeptStatsResponse
 )
 
 router = APIRouter(
@@ -243,6 +243,19 @@ def update_department(db: SessionDep,
     dept.DeptID = dept_id
     dept.CompanyID = company_id if not dept.CompanyID else dept.CompanyID
     return dept.update(db)
+
+
+@router.put("/{company_id}/departments/{dept_id}/force-location/", response_model=Departments)
+def update_department_force_location(db: SessionDep,
+                                    company_id: int,
+                                    dept_id: int,
+                                    payload: ForceLocationUpdate,
+                                    current_user: Users = Depends(require_permission("manage:Users"))):
+    """Activa o desactiva el geofence de fichaje (ForceLocation) de un departamento."""
+    dept = Departments.get(db, dept_id, company_id=company_id)
+    if not dept:
+        raise HTTPException(status_code=404, detail="Department not found")
+    return dept.update(db, ForceLocation=payload.ForceLocation)
 
 
 @router.delete("/{company_id}/", response_model=Companies)

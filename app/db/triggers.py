@@ -4,13 +4,11 @@ import logging
 
 def init_worklogs_triggers(engine: Engine):
     log = logging.getLogger(__name__)
-    check_trigger_sql = """
-    SELECT COUNT(*)
-    FROM sys.triggers
-    WHERE name = 'trg_UpdateUserHoursBalance'
-    """
+    # CREATE OR ALTER para que una definición antigua (p.ej. de una base
+    # restaurada desde backup) se sustituya siempre por la versión vigente.
+    # Debe ser la única sentencia de su batch, por eso el ENABLE va aparte.
     trg = """
-    CREATE TRIGGER [dbo].[trg_UpdateUserHoursBalance]
+    CREATE OR ALTER TRIGGER [dbo].[trg_UpdateUserHoursBalance]
     ON [dbo].[WorkLogTotals]
     AFTER INSERT, UPDATE, DELETE
     AS
@@ -89,18 +87,13 @@ def init_worklogs_triggers(engine: Engine):
                     source.DeltaPauseUncounted, source.DeltaBalance, GETDATE())
         ;
     END;
-    ALTER TABLE [dbo].[WorkLogTotals] ENABLE TRIGGER [trg_UpdateUserHoursBalance];
     """
+    enable_trg = "ALTER TABLE [dbo].[WorkLogTotals] ENABLE TRIGGER [trg_UpdateUserHoursBalance];"
     with engine.connect() as connection:
-        result = connection.execute(text(check_trigger_sql))
-        trigger_exists = result.scalar() > 0  # Verificar si el trigger ya existe
-
-        if not trigger_exists:
-            connection.execute(text(trg))
-            connection.commit()
-            log.debug("Trigger calculate work hours balance creado exitosamente.")
-        else:
-            log.debug("Trigger work hours balance ya existente. No se creó de nuevo.")
+        connection.execute(text(trg))
+        connection.execute(text(enable_trg))
+        connection.commit()
+        log.debug("Trigger work hours balance creado/actualizado (CREATE OR ALTER).")
 
 def init_triggers(engine: Engine):
     init_worklogs_triggers(engine)
