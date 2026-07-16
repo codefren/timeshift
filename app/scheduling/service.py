@@ -77,7 +77,8 @@ def generate_proposal(db: Session, department_id: int, week_start: date,
         return GenerateScheduleResponse(
             department_id=department_id, week_start=week_start, status="NO_EMPLOYEES",
             slot_minutes=grid.slot_minutes, shifts=[],
-            report=ScheduleReport(coverage_pct=0.0, demand_slots=0, shortfall_slots=0, hours_by_user=[]),
+            report=ScheduleReport(coverage_pct=0.0, demand_slots=0, shortfall_slots=0,
+                                  coverage_by_day=[], hours_by_user=[]),
         )
 
     result = solve(employees, grid, cfg)
