@@ -1,5 +1,6 @@
 from sqlalchemy import Engine
 import logging
+import traceback
 
 
 def init_worklogs_triggers(engine: Engine):
@@ -105,4 +106,18 @@ def init_worklogs_triggers(engine: Engine):
         log.debug("Trigger work hours balance creado/actualizado (DROP+CREATE).")
 
 def init_triggers(engine: Engine):
-    init_worklogs_triggers(engine)
+    # El trigger solo afecta al recálculo de horas (UserWeekHoursBalance /
+    # UserTotalHoursBalance). Si su creación falla (p.ej. la BD del cliente no
+    # tiene alguna columna que el trigger referencia), NO debe tumbar el arranque
+    # de toda la app: sin él la gente sigue pudiendo entrar y fichar; solo dejaría
+    # de actualizarse el balance de horas hasta corregirlo. Se registra el error
+    # completo para poder diagnosticar la causa real.
+    log = logging.getLogger(__name__)
+    try:
+        init_worklogs_triggers(engine)
+    except Exception as e:
+        log.error(
+            "No se pudo crear/actualizar trg_UpdateUserHoursBalance; la app "
+            "arranca igualmente sin recálculo de horas. Causa real:\n%s",
+            traceback.format_exc(),
+        )
