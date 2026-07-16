@@ -1,14 +1,19 @@
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine
 import logging
 
 
 def init_worklogs_triggers(engine: Engine):
     log = logging.getLogger(__name__)
-    # CREATE OR ALTER para que una definición antigua (p.ej. de una base
-    # restaurada desde backup) se sustituya siempre por la versión vigente.
-    # Debe ser la única sentencia de su batch, por eso el ENABLE va aparte.
+    # DROP + CREATE en lugar de CREATE OR ALTER (que es SQL Server 2016+), para
+    # compatibilidad con SQL Server 2008 R2. El DROP condicional y el ENABLE van
+    # en ejecuciones separadas porque CREATE TRIGGER debe ser la primera (y única)
+    # sentencia de su batch.
+    drop_trg = (
+        "IF OBJECT_ID(N'dbo.trg_UpdateUserHoursBalance', N'TR') IS NOT NULL "
+        "DROP TRIGGER dbo.trg_UpdateUserHoursBalance;"
+    )
     trg = """
-    CREATE OR ALTER TRIGGER [dbo].[trg_UpdateUserHoursBalance]
+    CREATE TRIGGER [dbo].[trg_UpdateUserHoursBalance]
     ON [dbo].[WorkLogTotals]
     AFTER INSERT, UPDATE, DELETE
     AS
@@ -89,11 +94,15 @@ def init_worklogs_triggers(engine: Engine):
     END;
     """
     enable_trg = "ALTER TABLE [dbo].[WorkLogTotals] ENABLE TRIGGER [trg_UpdateUserHoursBalance];"
-    with engine.connect() as connection:
-        connection.execute(text(trg))
-        connection.execute(text(enable_trg))
-        connection.commit()
-        log.debug("Trigger work hours balance creado/actualizado (CREATE OR ALTER).")
+    # exec_driver_sql: ejecución cruda por el driver, sin que SQLAlchemy interprete
+    # ':' como bind param ni el string como texto con parámetros. Cada llamada es su
+    # propio batch, por eso DROP y CREATE van separados (CREATE TRIGGER debe ser la
+    # primera sentencia de su batch). engine.begin() hace commit al terminar bien.
+    with engine.begin() as conn:
+        conn.exec_driver_sql(drop_trg)   # batch aparte
+        conn.exec_driver_sql(trg)        # CREATE TRIGGER como 1ª sentencia del batch
+        conn.exec_driver_sql(enable_trg)
+        log.debug("Trigger work hours balance creado/actualizado (DROP+CREATE).")
 
 def init_triggers(engine: Engine):
     init_worklogs_triggers(engine)
