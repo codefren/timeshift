@@ -118,6 +118,7 @@ from shifts import router as shifts_router
 from schedules import router as schedules_router
 from absences import router as absences_router
 from holidays import router as holidays_router
+from calendar_data import router as calendar_router
 app.include_router(work_logs_router.router)
 app.include_router(users_router.router)
 app.include_router(companies_router.router)
@@ -127,6 +128,7 @@ app.include_router(shifts_router.router)
 app.include_router(schedules_router.router)
 app.include_router(absences_router.router)
 app.include_router(holidays_router.router)
+app.include_router(calendar_router.router)
 
 '''# New tenant-aware routers
 from users.tenant_router import router as tenant_users_router
