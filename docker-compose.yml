@@ -1,0 +1,142 @@
+# =============================================================================
+#  TimeShift — stack completo (SQL Server + backend FastAPI + herramientas)
+#
+#  Uso básico:
+#    cp .env.docker.example .env.dev     # solo la primera vez
+#    docker compose up -d --build
+#    docker compose logs -f backend
+#
+#  Perfiles opcionales (no arrancan por defecto):
+#    docker compose --profile seed    run --rm seeder     # aplica los .sql de seed
+#    docker compose --profile restore run --rm restore    # restaura timeshift_*.bak
+#    docker compose --profile tools   run --rm sqlcmd     # shell sqlcmd interactiva
+# =============================================================================
+
+x-db-env: &db-env
+  ACCEPT_EULA: "Y"
+  MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-TimeShift@Dev2024}"
+
+services:
+
+  # ── SQL Server ─────────────────────────────────────────────────────────────
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: timeshift-sqlserver
+    environment:
+      <<: *db-env
+      MSSQL_PID: Developer
+    ports:
+      - "${SQLSERVER_PORT:-1433}:1433"
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      - ./:/backups:ro          # backups .bak y scripts .sql accesibles desde sqlcmd
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -No -Q "SELECT 1" > /dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    networks: [timeshift]
+
+  # ── Backend FastAPI (API + frontend estático en app/static) ────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: timeshift-backend:local
+    container_name: timeshift-backend
+    env_file: .env.dev
+    environment:
+      # Sobrescribe lo que venga del .env.dev: dentro de la red el host es el servicio
+      DB_HOST: sqlserver
+      DB_PORT: "1433"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      # Hot-reload: el código vive en /code/app (WORKDIR del Dockerfile)
+      - ./app:/code/app
+      # Fotos de perfil fuera del bind del código, para que persistan de verdad
+      - profile-pictures:/code/app/static/images
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    healthcheck:
+      # La app no expone /health: basta con comprobar que uvicorn sirve la raíz.
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks: [timeshift]
+
+  # ── Seeds SQL opcionales (perfil "seed") ───────────────────────────────────
+  seeder:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["seed"]
+    environment: *db-env
+    volumes:
+      - ./:/sql:ro
+    depends_on:
+      backend:
+        condition: service_started
+      sqlserver:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        SQLCMD="/opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P $$MSSQL_SA_PASSWORD -No -b"
+        for f in create_absences_tables.sql seed_absences_permissions.sql seed_users.sql; do
+          echo "[seed] aplicando $$f ..."
+          $$SQLCMD -i "/sql/$$f"
+        done
+        echo "[seed] completado."
+    networks: [timeshift]
+
+  # ── Restauración de backup .bak (perfil "restore") ─────────────────────────
+  restore:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["restore"]
+    environment:
+      <<: *db-env
+      BAK_FILE: "${BAK_FILE:-timeshift_20250610.bak}"
+      DB_NAME: "${DB_NAME:-timeshift}"
+    volumes:
+      - ./:/backups:ro
+      - ./docker/restore-backup.sh:/restore-backup.sh:ro
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/restore-backup.sh"]
+    networks: [timeshift]
+
+  # ── Shell sqlcmd interactiva (perfil "tools") ──────────────────────────────
+  sqlcmd:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["tools"]
+    environment: *db-env
+    volumes:
+      - ./:/sql:ro
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -c
+      - /opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P "$$MSSQL_SA_PASSWORD" -No -d "${DB_NAME:-timeshift}"
+    stdin_open: true
+    tty: true
+    networks: [timeshift]
+
+volumes:
+  sqlserver-data:
+  profile-pictures:
+
+networks:
+  timeshift:
+    driver: bridge

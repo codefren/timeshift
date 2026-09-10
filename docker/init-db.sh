@@ -1,7 +1,18 @@
 #!/bin/bash
+# =============================================================================
+#  Inicialización única del esquema de TimeShiftZone.
+#
+#  Con 3 backends en paralelo no se puede dejar que cada uno ejecute init_db()
+#  y create_first_data(): chocarían creando las mismas tablas y haciendo
+#  DROP/CREATE del trigger a la vez. Este contenedor lo hace una sola vez y
+#  termina; los backends arrancan después con SKIP_DB_INIT=true.
+# =============================================================================
 set -e
 
-echo "[entrypoint] Esperando a que SQL Server esté listo..."
+cd /code/app
+mkdir -p logs
+
+echo "[init-db] Esperando a que SQL Server esté listo..."
 
 MAX_RETRIES=30
 RETRY=0
@@ -15,13 +26,11 @@ pwd     = os.getenv("DB_PASSWORD", "")
 db_name = os.getenv("DB_NAME",     "timeshift")
 
 try:
-    # Conectar a master para verificar disponibilidad
     conn = pyodbc.connect(
         f"DRIVER={{{driver}}};SERVER={host};DATABASE=master;UID={user};PWD={pwd};"
         "TrustServerCertificate=yes;Connection Timeout=5;",
         timeout=5, autocommit=True
     )
-    # Crear la base de datos si no existe
     cursor = conn.cursor()
     cursor.execute(
         f"IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'{db_name}') "
@@ -37,24 +46,21 @@ EOF
 do
     RETRY=$((RETRY + 1))
     if [ "$RETRY" -ge "$MAX_RETRIES" ]; then
-        echo "[entrypoint] SQL Server no respondió después de $MAX_RETRIES intentos. Abortando."
+        echo "[init-db] SQL Server no respondió tras $MAX_RETRIES intentos. Abortando."
         exit 1
     fi
     sleep 3
 done
 
-mkdir -p logs
-mkdir -p "${PROFILE_PICTURES_PATH:-/code/app/static/images}"
+echo "[init-db] Creando esquema, triggers y datos iniciales..."
+python - <<'EOF'
+from db.session import init_db, engine
+from db.create_first_data import create_first_data
 
-# --reload en desarrollo (por defecto); varios workers en producción.
-# Controlar con UVICORN_RELOAD=false y UVICORN_WORKERS=4 en el entorno.
-UVICORN_RELOAD="${UVICORN_RELOAD:-true}"
-UVICORN_WORKERS="${UVICORN_WORKERS:-1}"
+init_db()
+create_first_data(engine)
+engine.dispose()
+print("[init-db] Esquema y datos iniciales listos.")
+EOF
 
-if [ "${UVICORN_RELOAD,,}" = "true" ] || [ "${UVICORN_RELOAD}" = "1" ]; then
-    echo "[entrypoint] Iniciando FastAPI (modo desarrollo, hot-reload)..."
-    exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-else
-    echo "[entrypoint] Iniciando FastAPI (${UVICORN_WORKERS} worker/s)..."
-    exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers "${UVICORN_WORKERS}"
-fi
+echo "[init-db] Completado. Los backends pueden arrancar."

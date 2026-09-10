@@ -1,0 +1,253 @@
+# =============================================================================
+#  TimeShiftZone — cluster: 1 SQL Server, 3 bases de datos, 3 backends
+#
+#    host:8001 ─► backend-1 ─► timeshift_1  (desde BAK_FILE_1)
+#    host:8002 ─► backend-2 ─► timeshift_2  (desde BAK_FILE_2)   red PRIVADA
+#    host:8003 ─► backend-3 ─► timeshift_3  (desde BAK_FILE_3)
+#    host:8000 ─► enrutado por Host: t1/t2/t3.localhost
+#
+#  Cada backend tiene SU PROPIA base, así que NO son réplicas intercambiables:
+#  nginx enruta de forma determinista en lugar de balancear. Un round-robin
+#  devolvería datos de una base distinta en cada petición.
+#
+#  Uso:
+#    cp .env.cluster.example .env.cluster
+#    # deja los 3 .bak en backups/  (opcional: sin ellos se crean vacías)
+#    docker compose -f docker-compose.cluster.yml --env-file .env.cluster up -d --build
+#
+#  Perfiles opcionales:
+#    ... --profile seed  run --rm seeder    # aplica los .sql de seed a las 3
+#    ... --profile tools run --rm sqlcmd    # consola SQL en la red privada
+# =============================================================================
+
+name: timeshiftzone
+
+x-db-env: &db-env
+  ACCEPT_EULA: "Y"
+  MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-TimeShift@Dev2024}"
+
+# Nombres de las 3 bases y de sus backups: los usan db-init y los backends.
+x-databases: &databases
+  DB_NAME_1: "${DB_NAME_1:-timeshift_1}"
+  DB_NAME_2: "${DB_NAME_2:-timeshift_2}"
+  DB_NAME_3: "${DB_NAME_3:-timeshift_3}"
+  BAK_FILE_1: "${BAK_FILE_1:-timeshift_1.bak}"
+  BAK_FILE_2: "${BAK_FILE_2:-timeshift_2.bak}"
+  BAK_FILE_3: "${BAK_FILE_3:-timeshift_3.bak}"
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: timeshiftzone-backend:local
+  env_file: .env.cluster
+  environment: &backend-env
+    DB_HOST: sqlserver          # nombre del servicio en la red privada
+    DB_PORT: "1433"
+    PYTHONUNBUFFERED: "1"
+    # El esquema/restauración lo hace db-init una sola vez para las 3 bases.
+    SKIP_DB_INIT: "true"
+    UVICORN_RELOAD: "false"
+    UVICORN_WORKERS: "${UVICORN_WORKERS:-2}"
+  depends_on:
+    db-init:
+      condition: service_completed_successfully
+  healthcheck:
+    test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)\""]
+    interval: 30s
+    timeout: 5s
+    retries: 5
+    start_period: 40s
+  restart: unless-stopped
+  networks: [timeshift-web, timeshift-db]
+
+services:
+
+  # ── SQL Server — solo red privada, sin puertos publicados ──────────────────
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: tsz-sqlserver
+    environment:
+      <<: *db-env
+      MSSQL_PID: Developer
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      # El RESTORE lo ejecuta el SERVIDOR: el .bak tiene que verlo él.
+      - ./backups:/backups:ro
+      - ./:/sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -No -Q "SELECT 1" > /dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    networks: [timeshift-db]
+
+  # ── Inicializa las 3 bases (una vez) y termina ─────────────────────────────
+  db-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: timeshiftzone-backend:local
+    container_name: tsz-db-init
+    env_file: .env.cluster
+    environment:
+      <<: [*backend-env, *databases]
+      SKIP_DB_INIT: "false"
+      # true → rehace las bases aunque ya existan
+      FORCE_RESTORE: "${FORCE_RESTORE:-false}"
+      # tras restaurar, añade las tablas que el backup no trajera
+      MIGRATE_AFTER_RESTORE: "${MIGRATE_AFTER_RESTORE:-true}"
+      BACKUP_DIR: /backups
+    volumes:
+      - ./app:/code/app
+      - ./docker/init_databases.py:/code/docker/init_databases.py:ro
+      # Mismo montaje que en sqlserver: db-init comprueba si el .bak existe
+      # para decidir entre restaurar o crear desde los modelos.
+      - ./backups:/backups:ro
+      - ./docker/logs/db-init:/code/app/logs
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint: ["python", "/code/docker/init_databases.py"]
+    restart: "no"
+    networks: [timeshift-db]
+
+  # ── Backend 1 → timeshift_1 ────────────────────────────────────────────────
+  backend-1:
+    <<: *backend
+    container_name: tsz-backend-1
+    environment:
+      <<: *backend-env
+      INSTANCE_ID: backend-1
+      DB_NAME: "${DB_NAME_1:-timeshift_1}"
+    volumes:
+      - ./app:/code/app
+      - ./docker/logs/backend-1:/code/app/logs
+      # Un volumen de imágenes POR INSTANCIA: las fotos se guardan como
+      # <UserID>.png y los UserID se repiten entre bases distintas.
+      - profile-pictures-1:/code/app/static/images
+
+  # ── Backend 2 → timeshift_2 ────────────────────────────────────────────────
+  backend-2:
+    <<: *backend
+    container_name: tsz-backend-2
+    environment:
+      <<: *backend-env
+      INSTANCE_ID: backend-2
+      DB_NAME: "${DB_NAME_2:-timeshift_2}"
+    volumes:
+      - ./app:/code/app
+      - ./docker/logs/backend-2:/code/app/logs
+      - profile-pictures-2:/code/app/static/images
+
+  # ── Backend 3 → timeshift_3 ────────────────────────────────────────────────
+  backend-3:
+    <<: *backend
+    container_name: tsz-backend-3
+    environment:
+      <<: *backend-env
+      INSTANCE_ID: backend-3
+      DB_NAME: "${DB_NAME_3:-timeshift_3}"
+    volumes:
+      - ./app:/code/app
+      - ./docker/logs/backend-3:/code/app/logs
+      - profile-pictures-3:/code/app/static/images
+
+  # ── Enrutador: único servicio con puertos en el host ───────────────────────
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: tsz-nginx
+    ports:
+      - "${GATEWAY_PORT:-8000}:80"     # enrutado por Host (t1/t2/t3.localhost)
+      - "${BACKEND_1_PORT:-8001}:8001" # acceso directo a backend-1
+      - "${BACKEND_2_PORT:-8002}:8002" # acceso directo a backend-2
+      - "${BACKEND_3_PORT:-8003}:8003" # acceso directo a backend-3
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./docker/proxy_common.inc:/etc/nginx/conf.d/proxy_common.inc:ro
+    depends_on:
+      backend-1:
+        condition: service_started
+      backend-2:
+        condition: service_started
+      backend-3:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    networks: [timeshift-web]
+
+  # ── Seeds SQL opcionales, aplicados a las 3 bases (perfil "seed") ──────────
+  seeder:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["seed"]
+    environment:
+      <<: [*db-env, *databases]
+      # Limita el seed a una sola base:  SEED_DBS=timeshift_2
+      SEED_DBS: "${SEED_DBS:-}"
+    volumes:
+      - ./:/sql:ro
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        SQLCMD="/opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P $$MSSQL_SA_PASSWORD -No -b"
+        DBS="$${SEED_DBS:-$$DB_NAME_1 $$DB_NAME_2 $$DB_NAME_3}"
+        for db in $$DBS; do
+          echo "══ seed en $$db ══"
+          for f in create_absences_tables.sql seed_absences_permissions.sql seed_users.sql; do
+            echo "[seed] $$db <- $$f"
+            # Los .sql llevan USE [timeshift] fijo: se reescribe al vuelo para
+            # no tener que duplicar los ficheros por base.
+            sed -E "s/USE \[[^]]+\]/USE [$$db]/g" "/sql/$$f" > "/tmp/$$f"
+            $$SQLCMD -d "$$db" -i "/tmp/$$f"
+          done
+        done
+        echo "[seed] completado."
+    networks: [timeshift-db]
+
+  # ── Consola SQL dentro de la red privada (perfil "tools") ──────────────────
+  sqlcmd:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["tools"]
+    environment:
+      <<: [*db-env, *databases]
+    volumes:
+      - ./:/sql:ro
+      - ./backups:/backups:ro
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -c
+      - /opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P "$$MSSQL_SA_PASSWORD" -No -d "${SQLCMD_DB:-master}"
+    stdin_open: true
+    tty: true
+    networks: [timeshift-db]
+
+volumes:
+  sqlserver-data:
+  profile-pictures-1:
+  profile-pictures-2:
+  profile-pictures-3:
+
+networks:
+  # internal: true → sin ruta hacia/desde el exterior. SQL Server solo es
+  # alcanzable por nombre desde los contenedores de esta red.
+  timeshift-db:
+    driver: bridge
+    internal: true
+  timeshift-web:
+    driver: bridge

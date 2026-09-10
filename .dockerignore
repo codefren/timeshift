@@ -1,11 +1,31 @@
+# ── Entornos virtuales y caché ───────────────────────────────────────────────
 env/
 .venv/
 venv/
 __pycache__/
 *.py[cod]
+
+# ── Git / IDE ────────────────────────────────────────────────────────────────
 .git/
 .gitignore
+.idea/
+.claude/
+
+# ── Documentación ────────────────────────────────────────────────────────────
 *.md
-app/logs/*
+docs/
+
+# ── Secretos: los inyecta docker-compose vía env_file / bind mount ───────────
 .env
+.env.*
 app/.env
+app/.env.*
+
+# ── Artefactos pesados que no deben entrar en la imagen ──────────────────────
+*.bak
+app/logs/*
+docker/logs/
+timeshift_*.bak
+
+# ── Ficheros propios de docker (no hacen falta dentro de la imagen) ──────────
+docker-compose*.yml

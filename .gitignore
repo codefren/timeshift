@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.template
+!.env.docker.example
+!.env.cluster.example
 app/.env
 app/.env.*
 !app/.env.template
@@ -73,3 +75,8 @@ docker-compose.override.yml
 
 # ── Archivos estáticos generados (frontend embebido) ─────────────────────────
 app/static/
+
+# ── Backups de arranque del cluster (ficheros grandes, no se versionan) ──────
+backups/*
+!backups/.gitkeep
+!backups/README.md
