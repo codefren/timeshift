@@ -146,6 +146,52 @@ Para rehacer las bases sobre datos existentes: `FORCE_RESTORE=true` (destructivo
 La respuesta lleva `X-TimeShift-Instance` y `X-TimeShift-Database` para saber
 qué instancia contestó.
 
+### Primer deploy con backups de prueba
+
+Si todavía no tienes los `.bak` reales, `docker/make-test-backups.sh` genera tres
+a partir de un backup existente. Cada uno lleva una tabla `_DeployMarker` con un
+tenant distinto: con tres copias idénticas no habría forma de comprobar que el
+backup 2 acabó en la base 2 y no en otra.
+
+```bash
+# 0. Entorno
+cp .env.cluster.example .env.cluster
+
+# 1. Arrancar solo SQL Server (los backups se generan contra él)
+docker compose -f docker-compose.cluster.yml --env-file .env.cluster up -d sqlserver
+
+# 2. Generar backups/timeshift_{1,2,3}.bak
+docker compose -f docker-compose.cluster.yml --env-file .env.cluster \
+  --profile testdata run --rm make-test-backups
+
+# 3. Levantar el stack completo: db-init restaura una base por backup
+docker compose -f docker-compose.cluster.yml --env-file .env.cluster up -d --build
+docker logs tsz-db-init
+
+# 4. Comprobar que cada backup fue a su base
+docker compose -f docker-compose.cluster.yml --env-file .env.cluster \
+  --profile tools run --rm -e SQLCMD_DB=timeshift_2 sqlcmd \
+  -Q "SELECT Tenant, SourceBak FROM dbo._DeployMarker"
+
+curl -sI http://localhost:8002/ | grep X-TimeShift
+```
+
+Con `SOURCE_BAK=otro.bak` se parte de otro backup del directorio raíz.
+
+Cuando lleguen los backups reales basta con sustituir los ficheros y forzar:
+
+```bash
+cp reales_1.bak backups/timeshift_1.bak   # etc.
+FORCE_RESTORE=true docker compose -f docker-compose.cluster.yml \
+  --env-file .env.cluster up -d --force-recreate db-init
+```
+
+> **Permisos:** `BACKUP DATABASE` lo ejecuta el proceso de SQL Server, que corre
+> como uid 10001 (`mssql`) y no puede escribir en `backups/` (del usuario del
+> host). Por eso el generador vuelca primero dentro del volumen del servidor y
+> luego, como root, copia el fichero a `backups/` y le ajusta permisos y dueño.
+> Es la razón de que ese servicio lleve `user: "0:0"`.
+
 ### Arranque
 
 ```bash

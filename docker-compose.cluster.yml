@@ -72,8 +72,9 @@ services:
       MSSQL_PID: Developer
     volumes:
       - sqlserver-data:/var/opt/mssql
-      # El RESTORE lo ejecuta el SERVIDOR: el .bak tiene que verlo él.
-      - ./backups:/backups:ro
+      # RESTORE y BACKUP los ejecuta el SERVIDOR: necesita ver el directorio.
+      # Sin :ro porque el generador de backups de prueba escribe aquí.
+      - ./backups:/backups
       - ./:/sql:ro
     healthcheck:
       test:
@@ -215,6 +216,27 @@ services:
           done
         done
         echo "[seed] completado."
+    networks: [timeshift-db]
+
+  # ── Genera 3 backups de PRUEBA en backups/ (perfil "testdata") ─────────────
+  make-test-backups:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["testdata"]
+    environment:
+      <<: [*db-env, *databases]
+      SOURCE_BAK: "${SOURCE_BAK:-timeshift_20250610.bak}"
+    # root: el servidor vuelca en su volumen y este contenedor copia al bind
+    # mount, que pertenece al usuario del host y mssql (uid 10001) no puede escribir.
+    user: "0:0"
+    volumes:
+      - ./:/sql:ro
+      - ./backups:/backups
+      - sqlserver-data:/mssql
+      - ./docker/make-test-backups.sh:/make-test-backups.sh:ro
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/make-test-backups.sh"]
     networks: [timeshift-db]
 
   # ── Consola SQL dentro de la red privada (perfil "tools") ──────────────────
