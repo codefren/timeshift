@@ -1,0 +1,44 @@
+# =============================================================================
+#  Caddy — borde HTTPS de TimeShiftZone.
+#
+#  Un dominio por cliente; cada uno va directo a SU backend (que sirve a la vez
+#  el frontend y la API bajo /api). NO se balancea: cada backend tiene su base.
+#
+#    bycosshiftzone.store4tex.com    -> backend-1  (timeshift_1)
+#    dressingshiftzone.store4tex.com -> backend-2  (timeshift_2)
+#    tvshiftzone.store4tex.com       -> backend-3  (timeshift_3)
+#
+#  Caddy saca y renueva solo los certificados de Let's Encrypt (necesita que los
+#  dominios resuelvan a la IP del VPS y los puertos 80/443 abiertos).
+#  Los dominios y el email ACME se pueden sobrescribir desde .env.cluster.
+# =============================================================================
+
+{
+	# Email para avisos de caducidad de los certificados (opcional pero
+	# recomendado). Se define en .env.cluster como ACME_EMAIL.
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN_1:bycosshiftzone.store4tex.com} {
+	reverse_proxy backend-1:8000
+	encode gzip zstd
+	request_body {
+		max_size 25MB
+	}
+}
+
+{$DOMAIN_2:dressingshiftzone.store4tex.com} {
+	reverse_proxy backend-2:8000
+	encode gzip zstd
+	request_body {
+		max_size 25MB
+	}
+}
+
+{$DOMAIN_3:tvshiftzone.store4tex.com} {
+	reverse_proxy backend-3:8000
+	encode gzip zstd
+	request_body {
+		max_size 25MB
+	}
+}

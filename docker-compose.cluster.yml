@@ -1,19 +1,26 @@
 # =============================================================================
 #  TimeShiftZone — cluster: 1 SQL Server, 3 bases de datos, 3 backends
 #
-#    host:8001 ─► backend-1 ─► timeshift_1  (desde BAK_FILE_1)
-#    host:8002 ─► backend-2 ─► timeshift_2  (desde BAK_FILE_2)   red PRIVADA
-#    host:8003 ─► backend-3 ─► timeshift_3  (desde BAK_FILE_3)
-#    host:8000 ─► enrutado por Host: t1/t2/t3.localhost
+#    https://bycosshiftzone.store4tex.com    ─► backend-1 ─► timeshift_1
+#    https://dressingshiftzone.store4tex.com ─► backend-2 ─► timeshift_2
+#    https://tvshiftzone.store4tex.com       ─► backend-3 ─► timeshift_3
+#
+#  Caddy es el ÚNICO servicio con puertos en el host (80/443) y termina TLS
+#  (Let's Encrypt automático). Enruta cada dominio directo a SU backend, que
+#  sirve a la vez el frontend (estático en app/static) y la API bajo /api.
 #
 #  Cada backend tiene SU PROPIA base, así que NO son réplicas intercambiables:
-#  nginx enruta de forma determinista en lugar de balancear. Un round-robin
+#  el enrutado es determinista por dominio, NO se balancea. Un round-robin
 #  devolvería datos de una base distinta en cada petición.
 #
 #  Uso:
-#    cp .env.cluster.example .env.cluster
+#    cp .env.cluster.example .env.cluster   # y poner secretos/dominios reales
 #    # deja los 3 .bak en backups/  (opcional: sin ellos se crean vacías)
 #    docker compose -f docker-compose.cluster.yml --env-file .env.cluster up -d --build
+#
+#  Requisitos para el HTTPS: los 3 dominios deben resolver a la IP del VPS y
+#  los puertos 80 y 443 abiertos en el firewall (Arsys). Docker gestiona sus
+#  propias reglas, no hace falta abrir nada en ufw.
 #
 #  Perfiles opcionales:
 #    ... --profile seed  run --rm seeder    # aplica los .sql de seed a las 3
@@ -69,7 +76,9 @@ services:
     container_name: tsz-sqlserver
     environment:
       <<: *db-env
-      MSSQL_PID: Developer
+      # Express: gratis y con licencia para producción (límite 10 GB por base,
+      # ~1,4 GB RAM y 4 cores). Si una base supera 10 GB, pasar a Standard.
+      MSSQL_PID: Express
     volumes:
       - sqlserver-data:/var/opt/mssql
       # RESTORE y BACKUP los ejecuta el SERVIDOR: necesita ver el directorio.
@@ -125,6 +134,7 @@ services:
       <<: *backend-env
       INSTANCE_ID: backend-1
       DB_NAME: "${DB_NAME_1:-timeshift_1}"
+      FRONTEND_URL: "${DOMAIN_1_URL:-https://bycosshiftzone.store4tex.com}"
     volumes:
       - ./app:/code/app
       - ./docker/logs/backend-1:/code/app/logs
@@ -140,6 +150,7 @@ services:
       <<: *backend-env
       INSTANCE_ID: backend-2
       DB_NAME: "${DB_NAME_2:-timeshift_2}"
+      FRONTEND_URL: "${DOMAIN_2_URL:-https://dressingshiftzone.store4tex.com}"
     volumes:
       - ./app:/code/app
       - ./docker/logs/backend-2:/code/app/logs
@@ -153,23 +164,33 @@ services:
       <<: *backend-env
       INSTANCE_ID: backend-3
       DB_NAME: "${DB_NAME_3:-timeshift_3}"
+      FRONTEND_URL: "${DOMAIN_3_URL:-https://tvshiftzone.store4tex.com}"
     volumes:
       - ./app:/code/app
       - ./docker/logs/backend-3:/code/app/logs
       - profile-pictures-3:/code/app/static/images
 
-  # ── Enrutador: único servicio con puertos en el host ───────────────────────
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: tsz-nginx
+  # ── Borde HTTPS: único servicio con puertos en el host ─────────────────────
+  #  Caddy termina TLS (Let's Encrypt automático) y enruta cada dominio directo
+  #  a su backend. La config vive en docker/Caddyfile.
+  caddy:
+    image: caddy:2-alpine
+    container_name: tsz-caddy
     ports:
-      - "${GATEWAY_PORT:-8000}:80"     # enrutado por Host (t1/t2/t3.localhost)
-      - "${BACKEND_1_PORT:-8001}:8001" # acceso directo a backend-1
-      - "${BACKEND_2_PORT:-8002}:8002" # acceso directo a backend-2
-      - "${BACKEND_3_PORT:-8003}:8003" # acceso directo a backend-3
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      ACME_EMAIL: "${ACME_EMAIL:-}"
+      DOMAIN_1: "${DOMAIN_1:-bycosshiftzone.store4tex.com}"
+      DOMAIN_2: "${DOMAIN_2:-dressingshiftzone.store4tex.com}"
+      DOMAIN_3: "${DOMAIN_3:-tvshiftzone.store4tex.com}"
     volumes:
-      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./docker/proxy_common.inc:/etc/nginx/conf.d/proxy_common.inc:ro
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Persisten los certificados entre reinicios (clave para no re-emitir y
+      # chocar con los límites de Let's Encrypt).
+      - caddy-data:/data
+      - caddy-config:/config
     depends_on:
       backend-1:
         condition: service_started
@@ -178,7 +199,7 @@ services:
       backend-3:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -264,6 +285,8 @@ volumes:
   profile-pictures-1:
   profile-pictures-2:
   profile-pictures-3:
+  caddy-data:
+  caddy-config:
 
 networks:
   # internal: true → sin ruta hacia/desde el exterior. SQL Server solo es
