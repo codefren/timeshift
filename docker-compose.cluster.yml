@@ -199,7 +199,9 @@ services:
       backend-3:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80 || exit 1"]
+      # El endpoint de admin (2019) responde 200 sin redirigir a HTTPS, a
+      # diferencia del :80 que hace 308 y wget lo tomaría como error.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
