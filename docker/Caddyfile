@@ -19,26 +19,37 @@
 	email {$ACME_EMAIL}
 }
 
-{$DOMAIN_1:bycosshiftzone.store4tex.com} {
-	reverse_proxy backend-1:8000
+# ── Política de caché común a los 3 sitios ────────────────────────────────────
+#  Los ficheros de /_next/static/* llevan hash en el nombre: son inmutables y se
+#  pueden cachear para siempre. El resto (sobre todo index.html y las rutas de
+#  la SPA) NO se cachea, para que tras cada deploy un refresco normal ya sirva
+#  el HTML nuevo (que apunta a los chunks nuevos). /api nunca se cachea.
+(frontend) {
+	reverse_proxy {args[0]} {
+		header_down -Cache-Control   # descarta el Cache-Control del backend
+	}
 	encode gzip zstd
 	request_body {
 		max_size 25MB
 	}
+
+	# Assets con hash → cache larga e inmutable.
+	@immutable path /_next/static/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	# Todo lo demás (HTML, API, favicon…) → revalidar siempre.
+	@dynamic not path /_next/static/*
+	header @dynamic Cache-Control "no-cache"
+}
+
+{$DOMAIN_1:bycosshiftzone.store4tex.com} {
+	import frontend backend-1:8000
 }
 
 {$DOMAIN_2:dressingshiftzone.store4tex.com} {
-	reverse_proxy backend-2:8000
-	encode gzip zstd
-	request_body {
-		max_size 25MB
-	}
+	import frontend backend-2:8000
 }
 
 {$DOMAIN_3:tvshiftzone.store4tex.com} {
-	reverse_proxy backend-3:8000
-	encode gzip zstd
-	request_body {
-		max_size 25MB
-	}
+	import frontend backend-3:8000
 }
