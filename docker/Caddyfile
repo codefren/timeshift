@@ -53,3 +53,17 @@
 {$DOMAIN_3:tvshiftzone.store4tex.com} {
 	import frontend backend-3:8000
 }
+
+# ── API del catálogo (stack "databricks", red externa 'edge') ─────────────────
+#  Solo JSON (no es un frontend Next.js), así que NO usa el snippet (frontend)
+#  ni su política de caché: es un proxy directo. El backend vive en el OTRO
+#  compose (catalogo-db) y es alcanzable por su container_name a través de la red
+#  compartida 'edge'. La API ya hace su propia auth (X-API-Key), CORS y rate
+#  limiting; Caddy solo termina TLS y reenvía.
+{$DOMAIN_API:catalogo.store4tex.com} {
+	reverse_proxy databricks-catalog-api:8000
+	encode gzip zstd
+	request_body {
+		max_size 5MB
+	}
+}

@@ -129,7 +129,7 @@ services:
   # ── Backend 1 → timeshift_1 ────────────────────────────────────────────────
   backend-1:
     <<: *backend
-    container_name: tsz-backend-1
+    container_name: tsz-bycosshiftzone
     environment:
       <<: *backend-env
       INSTANCE_ID: backend-1
@@ -145,7 +145,7 @@ services:
   # ── Backend 2 → timeshift_2 ────────────────────────────────────────────────
   backend-2:
     <<: *backend
-    container_name: tsz-backend-2
+    container_name: tsz-dressingshiftzone
     environment:
       <<: *backend-env
       INSTANCE_ID: backend-2
@@ -159,7 +159,7 @@ services:
   # ── Backend 3 → timeshift_3 ────────────────────────────────────────────────
   backend-3:
     <<: *backend
-    container_name: tsz-backend-3
+    container_name: tsz-tvshiftzone
     environment:
       <<: *backend-env
       INSTANCE_ID: backend-3
@@ -185,6 +185,8 @@ services:
       DOMAIN_1: "${DOMAIN_1:-bycosshiftzone.store4tex.com}"
       DOMAIN_2: "${DOMAIN_2:-dressingshiftzone.store4tex.com}"
       DOMAIN_3: "${DOMAIN_3:-tvshiftzone.store4tex.com}"
+      # Dominio de la API del catálogo (stack databricks, alcanzable por 'edge').
+      DOMAIN_API: "${DOMAIN_API:-catalogo.store4tex.com}"
     volumes:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
       # Persisten los certificados entre reinicios (clave para no re-emitir y
@@ -207,7 +209,9 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
-    networks: [timeshift-web]
+    # timeshift-web: para llegar a los 3 backends.  edge: para alcanzar la API
+    # del catálogo, que corre en el stack "databricks" (otro compose).
+    networks: [timeshift-web, edge]
 
   # ── Seeds SQL opcionales, aplicados a las 3 bases (perfil "seed") ──────────
   seeder:
@@ -298,3 +302,7 @@ networks:
     internal: true
   timeshift-web:
     driver: bridge
+  # Red compartida con el stack "databricks" (catalogo-db), para que Caddy
+  # alcance databricks-catalog-api. Créala una vez:  docker network create edge
+  edge:
+    external: true

@@ -177,12 +177,21 @@ def run_in_db(db, mode):
 def main():
     wait_for_sqlserver()
 
+    # Detecta dinámicamente cuántos clientes hay: lee DB_NAME_1, DB_NAME_2, …
+    # hasta que uno no esté definido. Así agregar un cliente es solo añadir
+    # DB_NAME_n / BAK_FILE_n al entorno, sin tocar este script.
     targets = []
-    for n in (1, 2, 3):
-        targets.append((
-            os.getenv(f"DB_NAME_{n}", f"timeshift_{n}"),
-            os.getenv(f"BAK_FILE_{n}", f"timeshift_{n}.bak"),
-        ))
+    n = 1
+    while os.getenv(f"DB_NAME_{n}"):
+        name = os.getenv(f"DB_NAME_{n}")
+        bak = os.getenv(f"BAK_FILE_{n}", f"{name}.bak")
+        targets.append((name, bak))
+        n += 1
+
+    # Fallback: si no se definió ninguna (uso directo sin compose), usa las 3
+    # por defecto para no romper el comportamiento histórico.
+    if not targets:
+        targets = [(f"timeshift_{i}", f"timeshift_{i}.bak") for i in (1, 2, 3)]
 
     failures = []
     with connect_master(timeout=30) as conn:
@@ -190,7 +199,7 @@ def main():
         for n, (db, bak) in enumerate(targets, start=1):
             print("", flush=True)
             print("─" * 63, flush=True)
-            log(f"Base {n}/3: {db}   (backup esperado: {bak})")
+            log(f"Base {n}/{len(targets)}: {db}   (backup esperado: {bak})")
 
             try:
                 if db_exists(cur, db) and not FORCE:
