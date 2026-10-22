@@ -220,7 +220,7 @@ def main():
     if failures:
         log(f"Terminado CON ERRORES en: {', '.join(failures)}")
         sys.exit(1)
-    log("Las 3 bases están listas. Los backends pueden arrancar.")
+    log(f"Las {len(targets)} bases están listas. Los backends pueden arrancar.")
 
 
 if __name__ == "__main__":

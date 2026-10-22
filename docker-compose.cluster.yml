@@ -4,6 +4,7 @@
 #    https://bycosshiftzone.store4tex.com    ─► backend-1 ─► timeshift_1
 #    https://dressingshiftzone.store4tex.com ─► backend-2 ─► timeshift_2
 #    https://tvshiftzone.store4tex.com       ─► backend-3 ─► timeshift_3
+#    https://tinashiftzone.soft4tex.com      ─► backend-4 ─► timeshift_4
 #
 #  Caddy es el ÚNICO servicio con puertos en el host (80/443) y termina TLS
 #  (Let's Encrypt automático). Enruta cada dominio directo a SU backend, que
@@ -38,9 +39,11 @@ x-databases: &databases
   DB_NAME_1: "${DB_NAME_1:-timeshift_1}"
   DB_NAME_2: "${DB_NAME_2:-timeshift_2}"
   DB_NAME_3: "${DB_NAME_3:-timeshift_3}"
+  DB_NAME_4: "${DB_NAME_4:-timeshift_4}"
   BAK_FILE_1: "${BAK_FILE_1:-timeshift_1.bak}"
   BAK_FILE_2: "${BAK_FILE_2:-timeshift_2.bak}"
   BAK_FILE_3: "${BAK_FILE_3:-timeshift_3.bak}"
+  BAK_FILE_4: "${BAK_FILE_4:-timeshift_4.bak}"
 
 x-backend: &backend
   build:
@@ -170,6 +173,20 @@ services:
       - ./docker/logs/backend-3:/code/app/logs
       - profile-pictures-3:/code/app/static/images
 
+  # ── Backend 4 → timeshift_4 ────────────────────────────────────────────────
+  backend-4:
+    <<: *backend
+    container_name: tsz-tinashiftzone
+    environment:
+      <<: *backend-env
+      INSTANCE_ID: backend-4
+      DB_NAME: "${DB_NAME_4:-timeshift_4}"
+      FRONTEND_URL: "${DOMAIN_4_URL:-https://tinashiftzone.soft4tex.com}"
+    volumes:
+      - ./app:/code/app
+      - ./docker/logs/backend-4:/code/app/logs
+      - profile-pictures-4:/code/app/static/images
+
   # ── Borde HTTPS: único servicio con puertos en el host ─────────────────────
   #  Caddy termina TLS (Let's Encrypt automático) y enruta cada dominio directo
   #  a su backend. La config vive en docker/Caddyfile.
@@ -185,6 +202,7 @@ services:
       DOMAIN_1: "${DOMAIN_1:-bycosshiftzone.store4tex.com}"
       DOMAIN_2: "${DOMAIN_2:-dressingshiftzone.store4tex.com}"
       DOMAIN_3: "${DOMAIN_3:-tvshiftzone.store4tex.com}"
+      DOMAIN_4: "${DOMAIN_4:-tinashiftzone.soft4tex.com}"
       # Dominio de la API del catálogo (stack databricks, alcanzable por 'edge').
       DOMAIN_API: "${DOMAIN_API:-catalogo.store4tex.com}"
     volumes:
@@ -199,6 +217,8 @@ services:
       backend-2:
         condition: service_started
       backend-3:
+        condition: service_started
+      backend-4:
         condition: service_started
     healthcheck:
       # El endpoint de admin (2019) responde 200 sin redirigir a HTTPS, a
@@ -231,7 +251,7 @@ services:
       - |
         set -e
         SQLCMD="/opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P $$MSSQL_SA_PASSWORD -No -b"
-        DBS="$${SEED_DBS:-$$DB_NAME_1 $$DB_NAME_2 $$DB_NAME_3}"
+        DBS="$${SEED_DBS:-$$DB_NAME_1 $$DB_NAME_2 $$DB_NAME_3 $$DB_NAME_4}"
         for db in $$DBS; do
           echo "══ seed en $$db ══"
           for f in create_absences_tables.sql seed_absences_permissions.sql seed_users.sql; do
@@ -291,6 +311,7 @@ volumes:
   profile-pictures-1:
   profile-pictures-2:
   profile-pictures-3:
+  profile-pictures-4:
   caddy-data:
   caddy-config:
 

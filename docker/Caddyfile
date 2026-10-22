@@ -7,6 +7,7 @@
 #    bycosshiftzone.store4tex.com    -> backend-1  (timeshift_1)
 #    dressingshiftzone.store4tex.com -> backend-2  (timeshift_2)
 #    tvshiftzone.store4tex.com       -> backend-3  (timeshift_3)
+#    tinashiftzone.soft4tex.com      -> backend-4  (timeshift_4)
 #
 #  Caddy saca y renueva solo los certificados de Let's Encrypt (necesita que los
 #  dominios resuelvan a la IP del VPS y los puertos 80/443 abiertos).
@@ -52,6 +53,10 @@
 
 {$DOMAIN_3:tvshiftzone.store4tex.com} {
 	import frontend backend-3:8000
+}
+
+{$DOMAIN_4:tinashiftzone.soft4tex.com} {
+	import frontend backend-4:8000
 }
 
 # ── API del catálogo (stack "databricks", red externa 'edge') ─────────────────
