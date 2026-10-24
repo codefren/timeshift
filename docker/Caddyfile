@@ -72,3 +72,17 @@
 		max_size 5MB
 	}
 }
+
+# ── MCP del catálogo (stack "databricks", red externa 'edge') ─────────────────
+#  Servidor MCP (Streamable HTTP en /mcp) que expone la API como herramientas.
+#  El MCP hace su propia auth por token (Authorization: Bearer <MCP_API_KEY>);
+#  Caddy solo termina TLS y reenvía. Sin `encode` y con flush_interval -1 para
+#  no bufferizar el streaming (SSE) del transporte.
+{$DOMAIN_MCP:mcp-bycos.data4tex.com} {
+	reverse_proxy databricks-catalog-mcp:8000 {
+		flush_interval -1
+	}
+	request_body {
+		max_size 5MB
+	}
+}
