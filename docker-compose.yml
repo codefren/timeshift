@@ -15,6 +15,8 @@
 x-db-env: &db-env
   ACCEPT_EULA: "Y"
   MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-TimeShift@Dev2024}"
+  # Hora local de España: GETDATE() en triggers y fechas de SQL Server
+  TZ: "${TZ:-Europe/Madrid}"
 
 services:
 
@@ -54,6 +56,8 @@ services:
       DB_HOST: sqlserver
       DB_PORT: "1433"
       PYTHONUNBUFFERED: "1"
+      # datetime.now() del backend (fichajes, turnos) en hora de España, no UTC
+      TZ: "${TZ:-Europe/Madrid}"
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
