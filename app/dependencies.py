@@ -332,9 +332,11 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         method = request.method
 
-        # Skip rate limiting for certain paths
-        skip_paths = ['/docs', '/openapi.json', '/favicon.ico']
-        if any(path.startswith(skip_path) for skip_path in skip_paths):
+        # Solo se limitan las llamadas a la API. El frontend estático (/_next/...,
+        # css, imágenes) que sirve este mismo backend no debe consumir cupo: una
+        # sola carga de página pide decenas de chunks. Los preflight CORS
+        # (OPTIONS) tampoco cuentan.
+        if not path.startswith('/api') or method == 'OPTIONS':
             return await call_next(request)
 
         # Define rate limits
