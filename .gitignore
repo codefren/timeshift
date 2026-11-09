@@ -73,3 +73,4 @@ docker-compose.override.yml
 
 # ── Archivos estáticos generados (frontend embebido) ─────────────────────────
 app/static/
+app/logs/
