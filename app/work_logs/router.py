@@ -69,7 +69,7 @@ def start_worklog(db: SessionDep,
                   user: Users = Depends(get_current_user)) -> WorkLogResponse | Response:
     shift = Shifts.get_actual(db, user.UserID,
                               day=start_datetime.date(),
-                              before=(start_datetime-timedelta(minutes=os.environ.get("SHIFT_BEFORE_MINUTES_MARGIN",15))).time())
+                              before=(start_datetime-timedelta(minutes=int(os.environ.get("SHIFT_BEFORE_MINUTES_MARGIN", 15)))).time())
     if shift is None and cancel_if_no_shift:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 

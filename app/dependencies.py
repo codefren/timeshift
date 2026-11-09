@@ -306,9 +306,19 @@ class TokenData(BaseModel):
 
 # Rate Limiter Middleware
 class RateLimiterMiddleware(BaseHTTPMiddleware):
+    DEFAULT_MAX_REQUESTS_PER_MINUTE = 120
+
     def __init__(self, app):
         super().__init__(app)
         self.rate_limit_records: Dict[str, List[datetime]] = defaultdict(list)
+        # Límite configurable por variable de entorno MAX_REQUESTS_PER_MINUTE
+        # (se lee al arrancar: cambiarlo requiere recrear el contenedor).
+        configured = CONFIG.MAX_REQUESTS_PER_MINUTE
+        self.max_requests = (
+            configured if isinstance(configured, int) and configured > 0
+            else self.DEFAULT_MAX_REQUESTS_PER_MINUTE
+        )
+        logging.getLogger(__name__).info(f"Rate limit: {self.max_requests} requests/minute per IP")
 
     def log_message(self, request, message: str, level: str = "info"):
         ip = request.client.host if request.client else "unknown"
@@ -329,7 +339,7 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
 
         # Define rate limits
         time_window = 60  # 1 minute
-        max_requests = 120  # Maximum requests per minute
+        max_requests = self.max_requests  # Maximum requests per minute
 
         # Check if IP exceeded rate limit
         current_time = datetime.now(UTC)

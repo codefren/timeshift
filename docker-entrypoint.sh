@@ -44,5 +44,17 @@ do
 done
 
 mkdir -p logs
-echo "[entrypoint] Iniciando FastAPI..."
-exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+mkdir -p "${PROFILE_PICTURES_PATH:-/code/app/static/images}"
+
+# --reload en desarrollo (por defecto); varios workers en producción.
+# Controlar con UVICORN_RELOAD=false y UVICORN_WORKERS=4 en el entorno.
+UVICORN_RELOAD="${UVICORN_RELOAD:-true}"
+UVICORN_WORKERS="${UVICORN_WORKERS:-1}"
+
+if [ "${UVICORN_RELOAD,,}" = "true" ] || [ "${UVICORN_RELOAD}" = "1" ]; then
+    echo "[entrypoint] Iniciando FastAPI (modo desarrollo, hot-reload)..."
+    exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+else
+    echo "[entrypoint] Iniciando FastAPI (${UVICORN_WORKERS} worker/s)..."
+    exec uvicorn main:app --host 0.0.0.0 --port 8000 --workers "${UVICORN_WORKERS}"
+fi

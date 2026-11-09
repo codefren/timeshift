@@ -1,0 +1,21 @@
+# =============================================================================
+#  Override SOLO para probar el cluster en local. En el servidor NO se usa.
+#
+#    docker compose -f docker-compose.cluster.yml -f docker-compose.cluster.local.yml \
+#      --env-file .env.cluster up -d --build
+#
+#  En local el .env.cluster apunta los dominios a http://<cliente>.localhost
+#  (los navegadores resuelven *.localhost a 127.0.0.1 sin tocar el fichero
+#  hosts). Con el esquema http:// Caddy no intenta sacar certificados, así que
+#  solo hace falta publicar su :80 en un puerto libre del host.
+#
+#    http://bycosshiftzone.localhost:8088     -> backend-1
+#    http://dressingshiftzone.localhost:8088  -> backend-2
+#    http://tvshiftzone.localhost:8088        -> backend-3
+#    http://tinashiftzone.localhost:8088      -> backend-4
+# =============================================================================
+
+services:
+  caddy:
+    ports: !override
+      - "${LOCAL_HTTP_PORT:-8088}:80"

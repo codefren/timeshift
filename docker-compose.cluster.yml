@@ -1,0 +1,333 @@
+# =============================================================================
+#  TimeShiftZone — cluster: 1 SQL Server, 3 bases de datos, 3 backends
+#
+#    https://bycosshiftzone.store4tex.com    ─► backend-1 ─► timeshift_1
+#    https://dressingshiftzone.store4tex.com ─► backend-2 ─► timeshift_2
+#    https://tvshiftzone.store4tex.com       ─► backend-3 ─► timeshift_3
+#    https://tinashiftzone.soft4tex.com      ─► backend-4 ─► timeshift_4
+#
+#  Caddy es el ÚNICO servicio con puertos en el host (80/443) y termina TLS
+#  (Let's Encrypt automático). Enruta cada dominio directo a SU backend, que
+#  sirve a la vez el frontend (estático en app/static) y la API bajo /api.
+#
+#  Cada backend tiene SU PROPIA base, así que NO son réplicas intercambiables:
+#  el enrutado es determinista por dominio, NO se balancea. Un round-robin
+#  devolvería datos de una base distinta en cada petición.
+#
+#  Uso:
+#    cp .env.cluster.example .env.cluster   # y poner secretos/dominios reales
+#    # deja los 3 .bak en backups/  (opcional: sin ellos se crean vacías)
+#    docker compose -f docker-compose.cluster.yml --env-file .env.cluster up -d --build
+#
+#  Requisitos para el HTTPS: los 3 dominios deben resolver a la IP del VPS y
+#  los puertos 80 y 443 abiertos en el firewall (Arsys). Docker gestiona sus
+#  propias reglas, no hace falta abrir nada en ufw.
+#
+#  Perfiles opcionales:
+#    ... --profile seed  run --rm seeder    # aplica los .sql de seed a las 3
+#    ... --profile tools run --rm sqlcmd    # consola SQL en la red privada
+# =============================================================================
+
+name: timeshiftzone
+
+x-db-env: &db-env
+  ACCEPT_EULA: "Y"
+  MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD:-TimeShift@Dev2024}"
+  # Hora local de España: GETDATE() en triggers y fechas de SQL Server
+  TZ: "${TZ:-Europe/Madrid}"
+
+# Nombres de las 3 bases y de sus backups: los usan db-init y los backends.
+x-databases: &databases
+  DB_NAME_1: "${DB_NAME_1:-timeshift_1}"
+  DB_NAME_2: "${DB_NAME_2:-timeshift_2}"
+  DB_NAME_3: "${DB_NAME_3:-timeshift_3}"
+  DB_NAME_4: "${DB_NAME_4:-timeshift_4}"
+  BAK_FILE_1: "${BAK_FILE_1:-timeshift_1.bak}"
+  BAK_FILE_2: "${BAK_FILE_2:-timeshift_2.bak}"
+  BAK_FILE_3: "${BAK_FILE_3:-timeshift_3.bak}"
+  BAK_FILE_4: "${BAK_FILE_4:-timeshift_4.bak}"
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: timeshiftzone-backend:local
+  env_file: .env.cluster
+  environment: &backend-env
+    DB_HOST: sqlserver          # nombre del servicio en la red privada
+    DB_PORT: "1433"
+    PYTHONUNBUFFERED: "1"
+    # datetime.now() del backend (fichajes, turnos) en hora de España, no UTC
+    TZ: "${TZ:-Europe/Madrid}"
+    # El esquema/restauración lo hace db-init una sola vez para las 3 bases.
+    SKIP_DB_INIT: "true"
+    UVICORN_RELOAD: "false"
+    UVICORN_WORKERS: "${UVICORN_WORKERS:-2}"
+  depends_on:
+    db-init:
+      condition: service_completed_successfully
+  healthcheck:
+    test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)\""]
+    interval: 30s
+    timeout: 5s
+    retries: 5
+    start_period: 40s
+  restart: unless-stopped
+  networks: [timeshift-web, timeshift-db]
+
+services:
+
+  # ── SQL Server — solo red privada, sin puertos publicados ──────────────────
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: tsz-sqlserver
+    environment:
+      <<: *db-env
+      # Express: gratis y con licencia para producción (límite 10 GB por base,
+      # ~1,4 GB RAM y 4 cores). Si una base supera 10 GB, pasar a Standard.
+      MSSQL_PID: Express
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+      # RESTORE y BACKUP los ejecuta el SERVIDOR: necesita ver el directorio.
+      # Sin :ro porque el generador de backups de prueba escribe aquí.
+      - ./backups:/backups
+      - ./:/sql:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -No -Q "SELECT 1" > /dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    networks: [timeshift-db]
+
+  # ── Inicializa las 3 bases (una vez) y termina ─────────────────────────────
+  db-init:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: timeshiftzone-backend:local
+    container_name: tsz-db-init
+    env_file: .env.cluster
+    environment:
+      <<: [*backend-env, *databases]
+      SKIP_DB_INIT: "false"
+      # true → rehace las bases aunque ya existan
+      FORCE_RESTORE: "${FORCE_RESTORE:-false}"
+      # tras restaurar, añade las tablas que el backup no trajera
+      MIGRATE_AFTER_RESTORE: "${MIGRATE_AFTER_RESTORE:-true}"
+      BACKUP_DIR: /backups
+    volumes:
+      - ./app:/code/app
+      - ./docker/init_databases.py:/code/docker/init_databases.py:ro
+      # Mismo montaje que en sqlserver: db-init comprueba si el .bak existe
+      # para decidir entre restaurar o crear desde los modelos.
+      - ./backups:/backups:ro
+      - ./docker/logs/db-init:/code/app/logs
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint: ["python", "/code/docker/init_databases.py"]
+    restart: "no"
+    networks: [timeshift-db]
+
+  # ── Backend 1 → timeshift_1 ────────────────────────────────────────────────
+  backend-1:
+    <<: *backend
+    container_name: tsz-bycosshiftzone
+    environment:
+      <<: *backend-env
+      INSTANCE_ID: backend-1
+      DB_NAME: "${DB_NAME_1:-timeshift_1}"
+      FRONTEND_URL: "${DOMAIN_1_URL:-https://bycosshiftzone.store4tex.com}"
+    volumes:
+      - ./app:/code/app
+      - ./docker/logs/backend-1:/code/app/logs
+      # Un volumen de imágenes POR INSTANCIA: las fotos se guardan como
+      # <UserID>.png y los UserID se repiten entre bases distintas.
+      - profile-pictures-1:/code/app/static/images
+
+  # ── Backend 2 → timeshift_2 ────────────────────────────────────────────────
+  backend-2:
+    <<: *backend
+    container_name: tsz-dressingshiftzone
+    environment:
+      <<: *backend-env
+      INSTANCE_ID: backend-2
+      DB_NAME: "${DB_NAME_2:-timeshift_2}"
+      FRONTEND_URL: "${DOMAIN_2_URL:-https://dressingshiftzone.store4tex.com}"
+    volumes:
+      - ./app:/code/app
+      - ./docker/logs/backend-2:/code/app/logs
+      - profile-pictures-2:/code/app/static/images
+
+  # ── Backend 3 → timeshift_3 ────────────────────────────────────────────────
+  backend-3:
+    <<: *backend
+    container_name: tsz-tvshiftzone
+    environment:
+      <<: *backend-env
+      INSTANCE_ID: backend-3
+      DB_NAME: "${DB_NAME_3:-timeshift_3}"
+      FRONTEND_URL: "${DOMAIN_3_URL:-https://tvshiftzone.store4tex.com}"
+    volumes:
+      - ./app:/code/app
+      - ./docker/logs/backend-3:/code/app/logs
+      - profile-pictures-3:/code/app/static/images
+
+  # ── Backend 4 → timeshift_4 ────────────────────────────────────────────────
+  backend-4:
+    <<: *backend
+    container_name: tsz-tinashiftzone
+    environment:
+      <<: *backend-env
+      INSTANCE_ID: backend-4
+      DB_NAME: "${DB_NAME_4:-timeshift_4}"
+      FRONTEND_URL: "${DOMAIN_4_URL:-https://tinashiftzone.soft4tex.com}"
+    volumes:
+      - ./app:/code/app
+      - ./docker/logs/backend-4:/code/app/logs
+      - profile-pictures-4:/code/app/static/images
+
+  # ── Borde HTTPS: único servicio con puertos en el host ─────────────────────
+  #  Caddy termina TLS (Let's Encrypt automático) y enruta cada dominio directo
+  #  a su backend. La config vive en docker/Caddyfile.
+  caddy:
+    image: caddy:2-alpine
+    container_name: tsz-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      ACME_EMAIL: "${ACME_EMAIL:-}"
+      DOMAIN_1: "${DOMAIN_1:-bycosshiftzone.store4tex.com}"
+      DOMAIN_2: "${DOMAIN_2:-dressingshiftzone.store4tex.com}"
+      DOMAIN_3: "${DOMAIN_3:-tvshiftzone.store4tex.com}"
+      DOMAIN_4: "${DOMAIN_4:-tinashiftzone.soft4tex.com}"
+      # Dominio de la API del catálogo (stack databricks, alcanzable por 'edge').
+      DOMAIN_API: "${DOMAIN_API:-catalogo.store4tex.com}"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Persisten los certificados entre reinicios (clave para no re-emitir y
+      # chocar con los límites de Let's Encrypt).
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      backend-1:
+        condition: service_started
+      backend-2:
+        condition: service_started
+      backend-3:
+        condition: service_started
+      backend-4:
+        condition: service_started
+    healthcheck:
+      # El endpoint de admin (2019) responde 200 sin redirigir a HTTPS, a
+      # diferencia del :80 que hace 308 y wget lo tomaría como error.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2019/config/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    # timeshift-web: para llegar a los 3 backends.  edge: para alcanzar la API
+    # del catálogo, que corre en el stack "databricks" (otro compose).
+    networks: [timeshift-web, edge]
+
+  # ── Seeds SQL opcionales, aplicados a las 3 bases (perfil "seed") ──────────
+  seeder:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["seed"]
+    environment:
+      <<: [*db-env, *databases]
+      # Limita el seed a una sola base:  SEED_DBS=timeshift_2
+      SEED_DBS: "${SEED_DBS:-}"
+    volumes:
+      - ./:/sql:ro
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        SQLCMD="/opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P $$MSSQL_SA_PASSWORD -No -b"
+        DBS="$${SEED_DBS:-$$DB_NAME_1 $$DB_NAME_2 $$DB_NAME_3 $$DB_NAME_4}"
+        for db in $$DBS; do
+          echo "══ seed en $$db ══"
+          for f in create_absences_tables.sql seed_absences_permissions.sql seed_users.sql; do
+            echo "[seed] $$db <- $$f"
+            # Los .sql llevan USE [timeshift] fijo: se reescribe al vuelo para
+            # no tener que duplicar los ficheros por base.
+            sed -E "s/USE \[[^]]+\]/USE [$$db]/g" "/sql/$$f" > "/tmp/$$f"
+            $$SQLCMD -d "$$db" -i "/tmp/$$f"
+          done
+        done
+        echo "[seed] completado."
+    networks: [timeshift-db]
+
+  # ── Genera 3 backups de PRUEBA en backups/ (perfil "testdata") ─────────────
+  make-test-backups:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["testdata"]
+    environment:
+      <<: [*db-env, *databases]
+      SOURCE_BAK: "${SOURCE_BAK:-timeshift_20250610.bak}"
+    # root: el servidor vuelca en su volumen y este contenedor copia al bind
+    # mount, que pertenece al usuario del host y mssql (uid 10001) no puede escribir.
+    user: "0:0"
+    volumes:
+      - ./:/sql:ro
+      - ./backups:/backups
+      - sqlserver-data:/mssql
+      - ./docker/make-test-backups.sh:/make-test-backups.sh:ro
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/make-test-backups.sh"]
+    networks: [timeshift-db]
+
+  # ── Consola SQL dentro de la red privada (perfil "tools") ──────────────────
+  sqlcmd:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    profiles: ["tools"]
+    environment:
+      <<: [*db-env, *databases]
+    volumes:
+      - ./:/sql:ro
+      - ./backups:/backups:ro
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    entrypoint:
+      - /bin/bash
+      - -c
+      - /opt/mssql-tools18/bin/sqlcmd -S sqlserver -U sa -P "$$MSSQL_SA_PASSWORD" -No -d "${SQLCMD_DB:-master}"
+    stdin_open: true
+    tty: true
+    networks: [timeshift-db]
+
+volumes:
+  sqlserver-data:
+  profile-pictures-1:
+  profile-pictures-2:
+  profile-pictures-3:
+  profile-pictures-4:
+  caddy-data:
+  caddy-config:
+
+networks:
+  # internal: true → sin ruta hacia/desde el exterior. SQL Server solo es
+  # alcanzable por nombre desde los contenedores de esta red.
+  timeshift-db:
+    driver: bridge
+    internal: true
+  timeshift-web:
+    driver: bridge
+  # Red compartida con el stack "databricks" (catalogo-db), para que Caddy
+  # alcance databricks-catalog-api. Créala una vez:  docker network create edge
+  edge:
+    external: true
