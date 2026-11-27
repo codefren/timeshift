@@ -328,6 +328,40 @@ class WorkLogs(SQLModel, table=True):
         return df
 
     @classmethod
+    def get_daily_vacation_hours(cls, db: Session, start_date: PastDate, end_date: PastDate,
+                                 user_id: int | List[int] = None) -> pd.DataFrame:
+        """
+        Horas de vacaciones por usuario y día en un rango de fechas.
+
+        Un día de vacaciones aprobado se guarda como un WorkLog con una línea de pausa
+        cuyo tipo de ausencia es solicitable ('leave') y con cupo (RequiresBalance),
+        es decir, el tipo "Vacaciones". Esas horas ya van incluidas en
+        PausedCountedHours; este método permite mostrarlas por separado en los informes.
+
+        Returns:
+            pd.DataFrame con columnas UserID, Day (date), VacationHours
+        """
+        q = select(cls.UserID,
+                   cls.LogDate.label("Day"),
+                   func.sum(WorkLogLines.LoggedHours).label("VacationHours")
+                   ).join(WorkLogLines, cls.WorkLogID == WorkLogLines.WorkLogID
+                   ).join(AbsenceTypes, WorkLogLines.AbsenceType == AbsenceTypes.AbsenceTypeID
+                   ).where(
+            cls.LogDate.between(start_date, end_date),
+            WorkLogLines.IsPause == True,
+            AbsenceTypes.Category == AbsenceCategory.LEAVE.value,
+            AbsenceTypes.RequiresBalance == True,
+        ).group_by(cls.UserID, cls.LogDate)
+
+        if user_id:
+            q = q.where(cls.UserID == user_id) if isinstance(user_id, int) else q.where(cls.UserID.in_(user_id))
+
+        res = db.exec(q).all()
+        df = pd.DataFrame(res, columns=["UserID", "Day", "VacationHours"])
+        df["VacationHours"] = pd.to_numeric(df["VacationHours"], errors="coerce").fillna(0.0)
+        return df
+
+    @classmethod
     def get_monthly_worked_hours_by_user(cls, db: Session, start_date: PastDate, end_date: PastDate,
                                          user_id: int | List[int] = None) -> pd.DataFrame:
         """

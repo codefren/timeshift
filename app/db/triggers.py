@@ -56,7 +56,7 @@ def init_worklogs_triggers(engine: Engine):
                 PausedUncountedHours = target.PausedUncountedHours + source.DeltaPauseUncounted,
                 BalanceHours         = target.BalanceHours         + source.DeltaBalance,
                 UpdatedAt            = GETDATE()
-        WHEN NOT MATCHED AND source.DeltaWorked <> 0 THEN
+        WHEN NOT MATCHED AND (source.DeltaWorked <> 0 OR source.DeltaPauseCounted <> 0 OR source.DeltaPauseUncounted <> 0) THEN
             INSERT (UserID, WeekNumber, Year,
                     WorkedHours, PausedCountedHours, PausedUncountedHours, BalanceHours, UpdatedAt)
             VALUES (source.UserID, source.WeekNumber, source.YearNumber,
@@ -87,7 +87,7 @@ def init_worklogs_triggers(engine: Engine):
                 TotalPausedUncountedHours = target.TotalPausedUncountedHours + source.DeltaPauseUncounted,
                 BalanceHours              = target.BalanceHours              + source.DeltaBalance,
                 UpdatedAt                 = GETDATE()
-        WHEN NOT MATCHED AND source.DeltaWorked <> 0 THEN
+        WHEN NOT MATCHED AND (source.DeltaWorked <> 0 OR source.DeltaPauseCounted <> 0 OR source.DeltaPauseUncounted <> 0) THEN
             INSERT (UserID, TotalHours, TotalPausedCountedHours, TotalPausedUncountedHours, BalanceHours, UpdatedAt)
             VALUES (source.UserID, source.DeltaWorked, source.DeltaPauseCounted,
                     source.DeltaPauseUncounted, source.DeltaBalance, GETDATE())

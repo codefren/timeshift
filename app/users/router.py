@@ -20,7 +20,7 @@ from SQLModels import (
 from .models import UserResponse, UserCreation, UserCompleteResponse, UserUpdate, AppDataResponse, UsersWorkingSimple, \
     UserWorkedHoursResponse, UsersWorkedHoursArgs, UserDepartmentAssignment
 
-from .objects import WorkedHoursPeriods, UsersWorkedHoursDetailedArgs, UserWorkedHoursDetailedResponse
+from .objects import WorkedHoursPeriods, UsersWorkedHoursDetailedArgs, UserWorkedHoursDetailedResponse, apply_vacations
 
 router = APIRouter(
     prefix="/api/employees",
@@ -123,7 +123,26 @@ def get_worked_hours(db: SessionDep,
 
     if data.start_date > data.end_date:
         raise HTTPException(status_code=400, detail="Start date must be before end date")
-    return UserWorkedHoursResponse.from_df(UserWeekHoursBalance.get_worked_hours_by_user(db, data.start_date, data.end_date, data.user_id))
+    res = UserWorkedHoursResponse.from_df(UserWeekHoursBalance.get_worked_hours_by_user(db, data.start_date, data.end_date, data.user_id))
+    vac_df = WorkLogs.get_daily_vacation_hours(db, data.start_date, data.end_date, data.user_id)
+    if not vac_df.empty:
+        # Semanas antiguas que solo tenían vacaciones no tienen fila en UserWeekHoursBalance
+        # (el trigger anterior no la creaba): sumar esas horas para no perderlas.
+        uids = [int(u) for u in vac_df['UserID'].unique()]
+        existing = {(int(u), int(w), int(y)) for u, w, y in db.exec(
+            select(UserWeekHoursBalance.UserID, UserWeekHoursBalance.WeekNumber, UserWeekHoursBalance.Year)
+            .where(UserWeekHoursBalance.UserID.in_(uids))).all()}
+        by_user = {r.UserID: r for r in res}
+        for _, row in vac_df.iterrows():
+            uid = int(row.UserID)
+            # Misma clave que el trigger: semana ISO + año natural
+            if (uid, row.Day.isocalendar().week, row.Day.year) in existing:
+                continue
+            if uid not in by_user:
+                by_user[uid] = UserWorkedHoursResponse(UserID=uid)
+                res.append(by_user[uid])
+            by_user[uid].PausedCountedHours += float(row.VacationHours)
+    return apply_vacations(res, vac_df)
 
 
 @router.get("/worked_hours/detailed/", response_model=List[UserWorkedHoursDetailedResponse])
@@ -152,7 +171,7 @@ def get_detailed_worked_hours(db: SessionDep,
             period=data.period
         )
     elif data.period == WorkedHoursPeriods.month:
-        return UserWorkedHoursDetailedResponse.from_df(
+        res = UserWorkedHoursDetailedResponse.from_df(
             WorkLogs.get_monthly_worked_hours_by_user(db, data.start_date, data.end_date, data.user_id),
             period = data.period
         )
@@ -177,7 +196,8 @@ def get_detailed_worked_hours(db: SessionDep,
                     )
                 )
 
-    return res
+    vac_df = WorkLogs.get_daily_vacation_hours(db, data.start_date, data.end_date, data.user_id)
+    return apply_vacations(res, vac_df, data.period)
 
 
 
